@@ -45,3 +45,27 @@ func TestPort443SaysWhatToDo(t *testing.T) {
 		}
 	}
 }
+
+func TestDNSMustPointOnlyHere(t *testing.T) {
+	const ip = "203.0.113.7"
+	none := func(string) bool { return false }
+	cases := map[string]struct {
+		found []string
+		want  string
+	}{
+		"right":      {[]string{ip}, ""},
+		"elsewhere":  {[]string{"198.51.100.1"}, "add this record"},
+		"stray a":    {[]string{ip, "198.51.100.9"}, "also points to 198.51.100.9"},
+		"stray aaaa": {[]string{ip, "2001:db8::1"}, "also points to 2001:db8::1"},
+	}
+	for name, tc := range cases {
+		got := DNSProblem("app.example.com", ip, tc.found, none)
+		if (tc.want == "" && got != "") || !strings.Contains(got, tc.want) {
+			t.Errorf("%s: %q", name, got)
+		}
+	}
+	mine := func(a string) bool { return a == "2001:db8::1" }
+	if got := DNSProblem("app.example.com", ip, []string{ip, "2001:db8::1"}, mine); got != "" {
+		t.Errorf("rejected this machine's own IPv6 address: %q", got)
+	}
+}

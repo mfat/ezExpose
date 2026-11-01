@@ -108,6 +108,22 @@ func (c CLI) StopServing(ctx context.Context) error {
 	return nil
 }
 
+// Close stops serving and confirms it really stopped. Tailscale forwards straight
+// to the app, past Caddy, so a caller must not claim access is closed without this.
+func (c CLI) Close(ctx context.Context, host string) error {
+	if err := c.StopServing(ctx); err != nil {
+		return fmt.Errorf("Tailscale can still reach this app: %w", err)
+	}
+	target, err := c.Proxying(ctx, host)
+	if err != nil {
+		return fmt.Errorf("couldn't confirm Tailscale stopped: %w", err)
+	}
+	if target != "" {
+		return errors.New("Tailscale can still reach this app")
+	}
+	return nil
+}
+
 func permission(out []byte, err error) error {
 	if strings.Contains(strings.ToLower(string(out)), "access denied") {
 		return errors.New("Tailscale needs your permission once. Run: sudo tailscale set --operator=$USER")

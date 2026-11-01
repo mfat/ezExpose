@@ -39,3 +39,27 @@ func TestBadNamesNeverReachTheCaddyfile(t *testing.T) {
 		}
 	}
 }
+
+func TestSetupGateClosesSignupsToStrangers(t *testing.T) {
+	out, err := Render("/data", []Site{{Host: "app.example.com", Upstream: "127.0.0.1:1", SetupToken: "abc123", SetupPaths: []string{"/signup"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"query setup=abc123", "path /signup /signup/*", "not header Cookie *ezsetup=abc123*", "respond @signup 403", "HttpOnly"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestBadSetupGatesAreRefused(t *testing.T) {
+	for _, s := range []Site{
+		{Host: "a.example.com", Upstream: "x:1", SetupToken: "abc", SetupPaths: nil},
+		{Host: "a.example.com", Upstream: "x:1", SetupToken: "a b", SetupPaths: []string{"/s"}},
+		{Host: "a.example.com", Upstream: "x:1", SetupToken: "a\n}", SetupPaths: []string{"/s"}},
+	} {
+		if _, err := Render("/d", []Site{s}); err == nil {
+			t.Errorf("accepted %+v", s)
+		}
+	}
+}

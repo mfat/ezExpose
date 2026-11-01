@@ -69,3 +69,26 @@ func TestStopServingOnlyFreesOurPort(t *testing.T) {
 		t.Fatalf("ran: %v", got)
 	}
 }
+
+func TestCloseConfirmsItReallyStopped(t *testing.T) {
+	still := `{"Web":{"box.tail1.ts.net:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:8080"}}}}}`
+	cases := map[string]struct {
+		status string
+		ok     bool
+	}{"closed": {`{}`, true}, "still open": {still, false}}
+	for name, tc := range cases {
+		c := CLI{run: func(_ context.Context, args ...string) ([]byte, error) {
+			if args[1] == "status" {
+				return []byte(tc.status), nil
+			}
+			return nil, nil
+		}}
+		if err := c.Close(context.Background(), "box.tail1.ts.net"); (err == nil) != tc.ok {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	failing := fake("daemon down", errors.New("exit status 1"))
+	if err := failing.Close(context.Background(), "box.tail1.ts.net"); err == nil {
+		t.Error("a failed stop looked fine")
+	}
+}

@@ -12,7 +12,7 @@ This is a library for now. There's no command to run yet.
 | `caddy` | Render a Caddyfile for one or more sites on port 443, with port 80 closed |
 | `acme` | Get certificates over the DNS challenge with `lego`, so no ports need to be open |
 | `cloudflare` | Keep one DNS record pointing at a machine. It only changes records it created |
-| `netcheck` | Check port 443, whether a name points here, and whether the machine is reachable |
+| `netcheck` | Check port 443, whether every DNS answer points here, and whether the machine is reachable |
 | `fetch` | Verified, resumable downloads, and the pinned `lego` |
 
 ## Status
@@ -24,6 +24,17 @@ This is a library for now. There's no command to run yet.
 | DNS challenge with Cloudflare | The certificate and DNS record worked. Another device connecting by name, and a real renewal, are unproven |
 
 This repo's own tests use stand-ins, and these packages haven't been run together here.
+
+## First accounts on a public app
+
+Set `SetupToken` and `SetupPaths` on a `caddy.Site`, and those paths answer 403 unless the
+browser came through `/?setup=TOKEN`. Strangers can't claim the app first, and an interrupted
+setup stays closed. Clear the token once the first account exists.
+
+## Leaving Tailscale
+
+Tailscale forwards straight to the app, past Caddy, so call `tailscale.CLI.Close` before
+changing anything else, and don't report access as closed unless it succeeds.
 
 ## Before you expose anything
 
