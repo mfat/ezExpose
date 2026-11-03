@@ -4,7 +4,8 @@ Go packages that put self-hosted apps behind real HTTPS, without opening your ma
 to the internet unless you choose to. Extracted from
 [ezVaultwarden](https://github.com/mfat/ezVaultwarden).
 
-This is a library for now. There's no command to run yet.
+This is a library for now. There's no command to run yet. It will become a tool of its own,
+and the [roadmap](docs/roadmap.md) says in what order.
 
 | Package | Job |
 |---|---|
