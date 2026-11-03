@@ -48,8 +48,10 @@ func client(t *testing.T, f http.Handler) Client {
 	t.Helper()
 	srv := httptest.NewServer(f)
 	t.Cleanup(srv.Close)
-	return Client{base: srv.URL, token: "tok", http: srv.Client()}
+	return Client{base: srv.URL, token: "tok", owner: owner, http: srv.Client()}
 }
+
+const owner = "0123456789abcdef"
 
 const host = "vault.example.com"
 
@@ -115,8 +117,43 @@ func TestRemoveOnlyDeletesOurRecord(t *testing.T) {
 	if err := client(t, f).Remove(context.Background(), "zone1", host); err != nil || len(f.writes) != 0 {
 		t.Fatalf("err %v, writes %v", err, f.writes)
 	}
-	f.records[0].Comment = comment
+	f.records[0].Comment = marker + owner
 	if err := client(t, f).Remove(context.Background(), "zone1", host); err != nil || len(f.writes) != 1 {
 		t.Fatalf("err %v, writes %v", err, f.writes)
+	}
+}
+
+func TestAnotherInstallsRecordIsNotOurs(t *testing.T) {
+	other := marker + "fedcba9876543210"
+	for _, legacy := range []string{other, "Managed by ezExpose"} {
+		f := &fakeAPI{records: []record{{ID: "r", Type: "A", Name: host, Content: "203.0.113.9", Comment: legacy}}}
+		c := client(t, f)
+		if err := c.Point(context.Background(), "zone1", host, "192.168.1.20"); err == nil {
+			t.Errorf("%q: took over the record", legacy)
+		}
+		if err := c.Remove(context.Background(), "zone1", host); err != nil || len(f.writes) != 0 {
+			t.Errorf("%q: err %v, writes %v", legacy, err, f.writes)
+		}
+	}
+}
+
+func TestAClientNeedsAnInstallID(t *testing.T) {
+	for _, bad := range []string{"", "short", "Has-Capitals0000", strings.Repeat("a", 65)} {
+		if _, err := New("tok", bad); err == nil {
+			t.Errorf("%q was accepted", bad)
+		}
+	}
+	id, err := NewOwner()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New("tok", id); err != nil {
+		t.Fatalf("NewOwner made an ID New refuses: %v", err)
+	}
+	f := &fakeAPI{}
+	zero := client(t, f)
+	zero.owner = ""
+	if err := zero.Point(context.Background(), "zone1", host, "192.168.1.20"); err == nil || len(f.writes) != 0 {
+		t.Fatalf("a client with no install ID wrote: %v, %v", err, f.writes)
 	}
 }

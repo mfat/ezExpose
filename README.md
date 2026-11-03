@@ -11,7 +11,7 @@ This is a library for now. There's no command to run yet.
 | `tailscale` | Serve a local port to your own devices, with a real certificate |
 | `caddy` | Render a Caddyfile for one or more sites on port 443, with port 80 closed |
 | `acme` | Get certificates over the DNS challenge with `lego`, so no ports need to be open |
-| `cloudflare` | Keep one DNS record pointing at a machine. It only changes records it created |
+| `cloudflare` | Keep one DNS record pointing at a machine. It only changes records this install created |
 | `netcheck` | Check port 443, whether every DNS answer points here, and whether the machine is reachable |
 | `fetch` | Verified, resumable downloads, and the pinned `lego` |
 

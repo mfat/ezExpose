@@ -1,25 +1,30 @@
 // Package cloudflare manages the one DNS record that points a name at this
-// machine. It only ever changes a record it created, marked by a comment.
+// machine. It only ever changes a record its own install created, marked by a
+// comment holding that install's ID.
 package cloudflare
 
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 )
 
 const (
 	apiBase = "https://api.cloudflare.com/client/v4"
-	// comment marks a record as ours. It has no effect on DNS answers.
-	comment = "Managed by ezExpose"
-	ttl     = 60
+	// marker starts the comment that marks a record as ours. Comments have no
+	// effect on DNS answers.
+	marker = "Managed by ezExpose, install "
+	ttl    = 60
 )
 
 // TokenURL opens Cloudflare's token page with the permissions filled in.
@@ -28,17 +33,39 @@ const TokenURL = "https://dash.cloudflare.com/profile/api-tokens?" +
 	"%7B%22key%22%3A%22dns%22%2C%22type%22%3A%22edit%22%7D%5D" +
 	"&accountId=%2A&zoneId=all&name=ezExpose"
 
-// Client talks to the Cloudflare API with one token.
+// Client talks to the Cloudflare API with one token, for one install.
 type Client struct {
 	base  string
 	token string
+	owner string
 	http  *http.Client
 }
 
-// New returns a client for token.
-func New(token string) Client {
-	return Client{base: apiBase, token: token, http: &http.Client{Timeout: 20 * time.Second}}
+var validOwner = regexp.MustCompile(`^[a-z0-9]{16,64}$`)
+
+// NewOwner returns an install ID for New. Save it with the install: it's what
+// tells this install's records from another's, even for the same name.
+func NewOwner() (string, error) {
+	raw := make([]byte, 16)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(raw), nil
 }
+
+// New returns a client for token that acts only on records owner created.
+func New(token, owner string) (Client, error) {
+	if !validOwner.MatchString(owner) {
+		return Client{}, errors.New("an install ID must be 16 to 64 lowercase letters and digits")
+	}
+	return Client{base: apiBase, token: token, owner: owner, http: &http.Client{Timeout: 20 * time.Second}}, nil
+}
+
+func (c Client) comment() string { return marker + c.owner }
+
+// ours is false for every record when the client has no owner, so a zero Client
+// can't change anything.
+func (c Client) ours(r record) bool { return c.owner != "" && r.Comment == c.comment() }
 
 type record struct {
 	ID      string `json:"id,omitempty"`
@@ -133,12 +160,15 @@ func (c Client) Point(ctx context.Context, zone, host, ip string) error {
 	if err != nil {
 		return err
 	}
-	want := record{Type: "A", Name: host, Content: ip, TTL: ttl, Comment: comment}
+	if c.owner == "" {
+		return errors.New("this client has no install ID; use New")
+	}
+	want := record{Type: "A", Name: host, Content: ip, TTL: ttl, Comment: c.comment()}
 	path := "/zones/" + zone + "/dns_records"
 	switch {
 	case len(found) == 0:
 		return c.call(ctx, http.MethodPost, path, want, nil)
-	case len(found) == 1 && found[0].Comment == comment:
+	case len(found) == 1 && c.ours(found[0]):
 		if found[0].Content == ip {
 			return nil
 		}
@@ -149,14 +179,14 @@ func (c Client) Point(ctx context.Context, zone, host, ip string) error {
 	return fmt.Errorf("%s already has a DNS record that ezExpose didn't create, so it was left alone", host)
 }
 
-// Remove deletes the record if it's ours.
+// Remove deletes the record if this install created it.
 func (c Client) Remove(ctx context.Context, zone, host string) error {
 	found, err := c.records(ctx, zone, host)
 	if err != nil {
 		return err
 	}
 	for _, r := range found {
-		if r.Comment == comment {
+		if c.ours(r) {
 			if err := c.call(ctx, http.MethodDelete, "/zones/"+zone+"/dns_records/"+r.ID, nil, nil); err != nil {
 				return err
 			}
