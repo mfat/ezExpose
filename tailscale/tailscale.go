@@ -87,8 +87,24 @@ func (c CLI) Proxying(ctx context.Context, host string) (string, error) {
 	return "something else", nil
 }
 
-// Serve forwards port 443 on the tailnet to target. It survives reboots.
-func (c CLI) Serve(ctx context.Context, target string) error {
+// ErrNotOurs means port 443 on the tailnet forwards somewhere else, so it was
+// left alone.
+var ErrNotOurs = errors.New("Tailscale's port 443 is already in use by something else, so it was left alone")
+
+// Serve forwards port 443 on the tailnet to target. It survives reboots. Port 443
+// must be free or already forward to target: someone else's route is never replaced.
+func (c CLI) Serve(ctx context.Context, host, target string) error {
+	current, err := c.Proxying(ctx, host)
+	if err != nil {
+		return err
+	}
+	switch current {
+	case target:
+		return nil
+	case "":
+	default:
+		return ErrNotOurs
+	}
 	// Tailscale can wait forever on a prompt to enable a feature.
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -99,26 +115,29 @@ func (c CLI) Serve(ctx context.Context, target string) error {
 	return nil
 }
 
-// StopServing frees port 443. A reset would also drop the user's other services.
-func (c CLI) StopServing(ctx context.Context) error {
-	out, err := c.run(ctx, "serve", "--https="+servePort, "off")
+// Close stops forwarding port 443 to target and confirms it really stopped.
+// Tailscale forwards straight to the app, past Caddy, so a caller must not claim
+// access is closed without this. A route to anything else is left alone.
+func (c CLI) Close(ctx context.Context, host, target string) error {
+	current, err := c.Proxying(ctx, host)
 	if err != nil {
-		return permission(out, err)
+		return fmt.Errorf("couldn't check what Tailscale serves: %w", err)
 	}
-	return nil
-}
-
-// Close stops serving and confirms it really stopped. Tailscale forwards straight
-// to the app, past Caddy, so a caller must not claim access is closed without this.
-func (c CLI) Close(ctx context.Context, host string) error {
-	if err := c.StopServing(ctx); err != nil {
-		return fmt.Errorf("Tailscale can still reach this app: %w", err)
+	switch current {
+	case "":
+		return nil
+	case target:
+	default:
+		return ErrNotOurs
 	}
-	target, err := c.Proxying(ctx, host)
-	if err != nil {
+	// A reset would also drop the user's other services, so only port 443 goes.
+	if out, err := c.run(ctx, "serve", "--https="+servePort, "off"); err != nil {
+		return fmt.Errorf("Tailscale can still reach this app: %w", permission(out, err))
+	}
+	if current, err = c.Proxying(ctx, host); err != nil {
 		return fmt.Errorf("couldn't confirm Tailscale stopped: %w", err)
 	}
-	if target != "" {
+	if current != "" {
 		return errors.New("Tailscale can still reach this app")
 	}
 	return nil

@@ -49,46 +49,108 @@ func TestProxyingTellsOursFromSomeoneElses(t *testing.T) {
 	}
 }
 
+const (
+	box  = "box.tail1.ts.net"
+	ours = "http://127.0.0.1:8080"
+)
+
+func route(target string) string {
+	return `{"Web":{"box.tail1.ts.net:443":{"Handlers":{"/":{"Proxy":"` + target + `"}}}}}`
+}
+
+// daemon is a stand-in tailscaled that records the commands that change things.
+type daemon struct {
+	status  string
+	changes []string
+	fail    error
+}
+
+func (d *daemon) cli() CLI {
+	return CLI{run: func(_ context.Context, args ...string) ([]byte, error) {
+		cmd := strings.Join(args, " ")
+		if cmd == "serve status --json" {
+			return []byte(d.status), nil
+		}
+		if d.fail != nil {
+			return []byte("Access denied: serve config denied"), d.fail
+		}
+		d.changes = append(d.changes, cmd)
+		switch {
+		case strings.HasSuffix(cmd, " off"):
+			d.status = `{}`
+		case strings.HasPrefix(cmd, "serve --bg"):
+			d.status = route(args[len(args)-1])
+		}
+		return nil, nil
+	}}
+}
+
 func TestServeExplainsTheOperatorStep(t *testing.T) {
-	err := fake("Access denied: serve config denied", errors.New("exit status 1")).Serve(context.Background(), "http://x")
+	d := &daemon{status: `{}`, fail: errors.New("exit status 1")}
+	err := d.cli().Serve(context.Background(), box, ours)
 	if err == nil || !strings.Contains(err.Error(), "--operator") {
 		t.Fatalf("got %v", err)
 	}
 }
 
-func TestStopServingOnlyFreesOurPort(t *testing.T) {
-	var got []string
-	c := CLI{run: func(_ context.Context, args ...string) ([]byte, error) {
-		got = args
-		return nil, nil
-	}}
-	if err := c.StopServing(context.Background()); err != nil {
-		t.Fatal(err)
+func TestServeTakesAFreePortAndIsSafeToRepeat(t *testing.T) {
+	d := &daemon{status: `{}`}
+	for range 2 {
+		if err := d.cli().Serve(context.Background(), box, ours); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if strings.Join(got, " ") != "serve --https=443 off" {
-		t.Fatalf("ran: %v", got)
+	if len(d.changes) != 1 || d.changes[0] != "serve --bg --https=443 "+ours {
+		t.Fatalf("ran: %v", d.changes)
+	}
+}
+
+func TestNeverTouchesSomeoneElsesRoute(t *testing.T) {
+	foreign := map[string]string{
+		"other proxy": route("http://127.0.0.1:3000"),
+		"files":       `{"Web":{"box.tail1.ts.net:443":{"Handlers":{"/":{"Path":"/srv"}}}}}`,
+		"shared":      `{"Web":{"box.tail1.ts.net:443":{"Handlers":{"/":{"Proxy":"` + ours + `"},"/a":{"Proxy":"y"}}}}}`,
+	}
+	for name, status := range foreign {
+		d := &daemon{status: status}
+		if err := d.cli().Serve(context.Background(), box, ours); !errors.Is(err, ErrNotOurs) {
+			t.Errorf("%s: serve got %v", name, err)
+		}
+		if err := d.cli().Close(context.Background(), box, ours); !errors.Is(err, ErrNotOurs) {
+			t.Errorf("%s: close got %v", name, err)
+		}
+		if len(d.changes) != 0 || d.status != status {
+			t.Errorf("%s: changed someone else's route: %v", name, d.changes)
+		}
 	}
 }
 
 func TestCloseConfirmsItReallyStopped(t *testing.T) {
-	still := `{"Web":{"box.tail1.ts.net:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:8080"}}}}}`
-	cases := map[string]struct {
-		status string
-		ok     bool
-	}{"closed": {`{}`, true}, "still open": {still, false}}
-	for name, tc := range cases {
-		c := CLI{run: func(_ context.Context, args ...string) ([]byte, error) {
-			if args[1] == "status" {
-				return []byte(tc.status), nil
-			}
-			return nil, nil
-		}}
-		if err := c.Close(context.Background(), "box.tail1.ts.net"); (err == nil) != tc.ok {
-			t.Errorf("%s: %v", name, err)
-		}
+	d := &daemon{status: route(ours)}
+	if err := d.cli().Close(context.Background(), box, ours); err != nil {
+		t.Fatal(err)
 	}
-	failing := fake("daemon down", errors.New("exit status 1"))
-	if err := failing.Close(context.Background(), "box.tail1.ts.net"); err == nil {
+	if strings.Join(d.changes, ";") != "serve --https=443 off" {
+		t.Fatalf("ran: %v", d.changes)
+	}
+	// Already closed is fine, and changes nothing.
+	if err := d.cli().Close(context.Background(), box, ours); err != nil || len(d.changes) != 1 {
+		t.Fatalf("second close: %v, %v", err, d.changes)
+	}
+}
+
+func TestCloseReportsARouteThatSurvived(t *testing.T) {
+	stuck := CLI{run: func(_ context.Context, args ...string) ([]byte, error) {
+		if args[1] == "status" {
+			return []byte(route(ours)), nil
+		}
+		return nil, nil
+	}}
+	if err := stuck.Close(context.Background(), box, ours); err == nil {
+		t.Error("claimed closed while Tailscale still forwards")
+	}
+	d := &daemon{status: route(ours), fail: errors.New("exit status 1")}
+	if err := d.cli().Close(context.Background(), box, ours); err == nil {
 		t.Error("a failed stop looked fine")
 	}
 }

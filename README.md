@@ -41,10 +41,12 @@ Set `SetupToken` and `SetupPaths` on a `caddy.Site`, and those paths answer 403 
 browser came through `/?setup=TOKEN`. Strangers can't claim the app first, and an interrupted
 setup stays closed. Clear the token once the first account exists.
 
-## Leaving Tailscale
+## Tailscale routes
 
-Tailscale forwards straight to the app, past Caddy, so call `tailscale.CLI.Close` before
-changing anything else, and don't report access as closed unless it succeeds.
+`tailscale.CLI.Serve` and `Close` only act on port 443 when it's free or already forwards to
+your app. Any other route returns `ErrNotOurs` and stays as it was. Tailscale forwards
+straight to the app, past Caddy, so call `Close` before changing anything else, and don't
+report access as closed unless it succeeds.
 
 ## Before you expose anything
 
