@@ -15,6 +15,16 @@ This is a library for now. There's no command to run yet.
 | `netcheck` | Check port 443, whether every DNS answer points here, and whether the machine is reachable |
 | `fetch` | Verified, resumable downloads, and the pinned `lego` |
 
+## Requirements
+
+- Go 1.27.3 or later.
+- `tailscale` needs the Tailscale command installed and signed in, with MagicDNS and HTTPS
+  turned on in the admin console. Without root, run `sudo tailscale set --operator=$USER` once.
+- `acme` runs `lego`. `fetch` pins the Linux builds for 64-bit Intel/AMD and ARM.
+- `caddy` only writes the config. Your tool runs Caddy itself.
+- The port 443 fix that `netcheck` suggests is for Linux. The packages have only been used
+  on Linux, on Ubuntu 24.04 and WSL.
+
 ## Status
 
 | Route | Tested for real in ezVaultwarden |
