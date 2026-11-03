@@ -17,4 +17,10 @@ jobs:
           go-version-file: go.mod
       - run: test -z "$(gofmt -l .)"
       - run: go vet ./...
+      - name: Install the pinned Caddy, so its own parser checks what we render
+        run: |
+          curl -fsSL -o caddy.tgz https://github.com/caddyserver/caddy/releases/download/v2.11.7/caddy_2.11.7_linux_amd64.tar.gz
+          echo "a7a433a1b133efc3c8d10eb0b99d52a24b5ef5c322dc77f5282182b1c0402139ab83f3a99f0c52409df77d20123fb0b523edad8a66d8f5e49136197bf61ef0e7  caddy.tgz" | sha512sum -c -
+          mkdir -p "$RUNNER_TEMP/bin" && tar xzf caddy.tgz -C "$RUNNER_TEMP/bin" caddy && rm caddy.tgz
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - run: go test ./...

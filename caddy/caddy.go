@@ -4,7 +4,10 @@ package caddy
 import (
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -30,7 +33,11 @@ type Site struct {
 // The name reaches the Caddyfile, so only a plain hostname gets through.
 var validHost = regexp.MustCompile(`^(localhost|([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,})$`)
 
-var validToken = regexp.MustCompile(`^[a-zA-Z0-9]+$`)
+// A setup token is a password in a link, so it has to be long enough not to guess.
+var validToken = regexp.MustCompile(`^[a-zA-Z0-9]{16,}$`)
+
+// Paths are matched literally: no spaces, quotes, braces or wildcards.
+var validPath = regexp.MustCompile(`^/[A-Za-z0-9._~/-]*$`)
 
 // ValidHost reports whether host is safe to use as a site name.
 func ValidHost(host string) bool { return validHost.MatchString(host) }
@@ -50,14 +57,8 @@ func Render(storage string, sites []Site) (string, error) {
 }
 `, storage)
 	for _, s := range sites {
-		if !ValidHost(s.Host) {
-			return "", fmt.Errorf("%q isn't a host name", s.Host)
-		}
-		if s.Upstream == "" {
-			return "", errors.New("a site needs an upstream")
-		}
-		if s.SetupToken != "" && (!validToken.MatchString(s.SetupToken) || len(s.SetupPaths) == 0) {
-			return "", errors.New("a setup token must be letters and digits, and needs setup paths")
+		if err := s.check(); err != nil {
+			return "", err
 		}
 		fmt.Fprintf(&b, "\nhttps://%s", s.Host)
 		if s.Port != 0 {
@@ -95,4 +96,68 @@ func writeSetupGate(b *strings.Builder, s Site) {
 		fmt.Fprintf(b, " %s %s/*", path, path)
 	}
 	fmt.Fprintf(b, "\n\t\tnot header Cookie *ezsetup=%s*\n\t}\n\trespond @signup 403\n", s.SetupToken)
+}
+
+// check refuses anything that could add to the Caddyfile instead of filling a field.
+func (s Site) check() error {
+	if !ValidHost(s.Host) {
+		return fmt.Errorf("%q isn't a host name", s.Host)
+	}
+	if s.Port < 0 || s.Port > 65535 {
+		return fmt.Errorf("%d isn't a port", s.Port)
+	}
+	if err := checkUpstream(s.Upstream); err != nil {
+		return err
+	}
+	if s.Bind != "" && net.ParseIP(s.Bind) == nil {
+		return fmt.Errorf("%q isn't an address to listen on", s.Bind)
+	}
+	if (s.CertFile == "") != (s.KeyFile == "") {
+		return errors.New("a certificate file needs its key file, and the other way round")
+	}
+	if s.Internal && s.CertFile != "" {
+		return errors.New("a site uses either Caddy's own certificates or files, not both")
+	}
+	for _, f := range []string{s.CertFile, s.KeyFile} {
+		if strings.ContainsFunc(f, isControl) {
+			return fmt.Errorf("%q isn't a file name", f)
+		}
+	}
+	if s.SetupToken != "" && (!validToken.MatchString(s.SetupToken) || len(s.SetupPaths) == 0) {
+		return errors.New("a setup token must be at least 16 letters and digits, and needs setup paths")
+	}
+	for _, path := range append(append([]string{}, s.Block...), s.SetupPaths...) {
+		if !validPath.MatchString(path) || strings.Contains(path, "//") || path == "/" {
+			return fmt.Errorf("%q isn't a path to match", path)
+		}
+	}
+	return nil
+}
+
+func isControl(r rune) bool { return r < 0x20 || r == 0x7f }
+
+// checkUpstream accepts host:port, optionally with http:// or https:// in front.
+func checkUpstream(upstream string) error {
+	bad := fmt.Errorf("%q isn't an upstream such as 127.0.0.1:8080", upstream)
+	rest := upstream
+	if scheme, after, ok := strings.Cut(upstream, "://"); ok {
+		if scheme != "http" && scheme != "https" {
+			return bad
+		}
+		rest = after
+	}
+	if u, err := url.Parse("http://" + rest); err != nil || u.Host != rest {
+		return bad
+	}
+	host, port, err := net.SplitHostPort(rest)
+	if err != nil || host == "" {
+		return bad
+	}
+	if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
+		return bad
+	}
+	if net.ParseIP(host) == nil && !ValidHost(host) {
+		return bad
+	}
+	return nil
 }
