@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/mfat/ezExpose/fetch"
 )
@@ -63,12 +64,16 @@ func lastLines(out []byte, n int) string {
 }
 
 // fetchLego downloads the pinned lego the first time. The folder only appears
-// once complete and verified, so finding it is proof enough.
+// once complete and verified, but files can still go missing or get damaged
+// later, so a copy that doesn't answer with its version is fetched again.
 func (i Issuer) fetchLego(ctx context.Context) (string, error) {
 	final := filepath.Join(i.Tools, "lego-"+fetch.LegoVersion)
 	binary := filepath.Join(final, "lego")
-	if _, err := os.Stat(final); err == nil {
+	if works(ctx, binary) {
 		return binary, nil
+	}
+	if err := os.RemoveAll(final); err != nil {
+		return "", err
 	}
 	url, sum, err := fetch.LegoRelease(runtime.GOARCH)
 	if err != nil {
@@ -89,4 +94,12 @@ func (i Issuer) fetchLego(ctx context.Context) (string, error) {
 		return "", err
 	}
 	return binary, os.Rename(staged, final)
+}
+
+// works reports whether binary runs and is the pinned lego.
+func works(ctx context.Context, binary string) bool {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, binary, "--version").Output()
+	return err == nil && strings.Contains(string(out), fetch.LegoVersion)
 }

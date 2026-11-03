@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -14,6 +16,10 @@ import (
 type Report func(received int64)
 
 const maxFailures = 5
+
+// maxAttempts bounds a download that keeps delivering a little and dropping, which
+// would otherwise never count as failing.
+const maxAttempts = 200
 
 // stallTimeout gives up on a connection that stops delivering. Slow is fine.
 var stallTimeout = 45 * time.Second
@@ -45,7 +51,10 @@ func download(ctx context.Context, open openFunc, verify func(io.Reader) error, 
 func fetchAll(ctx context.Context, f *os.File, open openFunc, verify func(io.Reader) error, report Report) error {
 	var last error
 	failures := 0
-	for failures < maxFailures {
+	for attempt := 0; failures < maxFailures; attempt++ {
+		if attempt == maxAttempts {
+			return fmt.Errorf("download: gave up after %d attempts: %w", attempt, last)
+		}
 		if failures > 0 {
 			select {
 			case <-ctx.Done():
@@ -107,6 +116,13 @@ func fetchFrom(ctx context.Context, f *os.File, open openFunc, report Report) (i
 	defer resp.Body.Close()
 	switch resp.StatusCode {
 	case http.StatusPartialContent:
+		// Bytes from anywhere else would be appended in the wrong place.
+		if start, ok := rangeStart(resp.Header.Get("Content-Range")); !ok || start != offset {
+			if err := f.Truncate(0); err != nil {
+				return 0, err
+			}
+			return 0, fmt.Errorf("download: asked for byte %d, got range %q", offset, resp.Header.Get("Content-Range"))
+		}
 	case http.StatusOK:
 		// This server ignored the range, so it is sending the file from the top.
 		if err := f.Truncate(0); err != nil {
@@ -153,4 +169,18 @@ func rangeRequest(ctx context.Context, url string, offset int64) (*http.Request,
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
 	}
 	return req, nil
+}
+
+// rangeStart reads the first byte from a Content-Range such as "bytes 100-199/200".
+func rangeStart(header string) (int64, bool) {
+	spec, ok := strings.CutPrefix(header, "bytes ")
+	if !ok {
+		return 0, false
+	}
+	first, _, ok := strings.Cut(spec, "-")
+	if !ok {
+		return 0, false
+	}
+	start, err := strconv.ParseInt(first, 10, 64)
+	return start, err == nil && start >= 0
 }

@@ -59,6 +59,7 @@ func droppingServer(t *testing.T, body []byte, perConnection int) *httptest.Serv
 		}
 		end := min(start+perConnection, len(body))
 		w.Write(body[start:end])
+		w.(http.Flusher).Flush()
 		if end < len(body) {
 			panic(http.ErrAbortHandler)
 		}
@@ -92,6 +93,7 @@ func TestServerThatIgnoresRangesStartsClean(t *testing.T) {
 		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 		if calls == 1 {
 			w.Write(body[:100])
+			w.(http.Flusher).Flush()
 			panic(http.ErrAbortHandler)
 		}
 		w.Write(body)
@@ -146,6 +148,7 @@ func TestStalledConnectionIsAbandonedAndResumed(t *testing.T) {
 			<-release // goes silent without closing
 			return
 		}
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes 100-%d/%d", len(body)-1, len(body)))
 		w.Header().Set("Content-Length", strconv.Itoa(len(body)-100))
 		w.WriteHeader(http.StatusPartialContent)
 		w.Write(body[100:])
@@ -170,5 +173,63 @@ func TestReportCountsTheWholeFileAcrossResumes(t *testing.T) {
 	f.Close()
 	if last != int64(len(body)) {
 		t.Fatalf("reported %d", last)
+	}
+}
+
+func TestAResumeFromTheWrongPlaceIsThrownAway(t *testing.T) {
+	fastRetries(t)
+	body := bytes.Repeat([]byte("vault"), 2000)
+	var requests []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.Header.Get("Range"))
+		switch len(requests) {
+		case 1: // drops after 100 bytes
+			w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+			w.Write(body[:100])
+			w.(http.Flusher).Flush()
+			panic(http.ErrAbortHandler)
+		case 2: // the wrong range: appending it would corrupt the file
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes 0-%d/%d", len(body)-1, len(body)))
+			w.WriteHeader(http.StatusPartialContent)
+			w.Write(body)
+		default:
+			w.Write(body)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	f, err := download(context.Background(), openURL(srv.URL), accept(body), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if got, _ := io.ReadAll(f); !bytes.Equal(got, body) {
+		t.Fatal("wrong content")
+	}
+	if strings.Join(requests, ",") != ",bytes=100-," {
+		t.Fatalf("requests: %q", requests)
+	}
+}
+
+func TestRangeStart(t *testing.T) {
+	cases := map[string]int64{"bytes 100-199/200": 100, "bytes 0-9/*": 0}
+	for header, want := range cases {
+		if got, ok := rangeStart(header); !ok || got != want {
+			t.Errorf("%q: %d, %v", header, got, ok)
+		}
+	}
+	for _, bad := range []string{"", "bytes */200", "items 1-2/3", "bytes -5-9/10", "bytes x-9/10"} {
+		if _, ok := rangeStart(bad); ok {
+			t.Errorf("%q was accepted", bad)
+		}
+	}
+}
+
+func TestADownloadThatNeverFinishesGivesUp(t *testing.T) {
+	fastRetries(t)
+	// Every attempt delivers one more byte and drops, so it never counts as failing.
+	srv := droppingServer(t, bytes.Repeat([]byte("v"), 10*maxAttempts), 1)
+	if _, err := download(context.Background(), openURL(srv.URL), accept(nil), nil); err == nil ||
+		!strings.Contains(err.Error(), "gave up") {
+		t.Fatalf("got %v", err)
 	}
 }
