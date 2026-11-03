@@ -18,16 +18,30 @@ import (
 
 var client = &http.Client{Timeout: 10 * time.Second}
 
-// IsPublic reports whether ip can be reached from the internet. 100.64.0.0/10 is
-// carrier NAT and Tailscale. A cloud machine with a private address and a mapped
-// public one looks private here, so treat "false" as unknown, never as safe.
+// notRoutable are IPv4 ranges the internet doesn't route: "this network",
+// carrier NAT and Tailscale, and the reserved block.
+var notRoutable = []net.IPNet{
+	{IP: net.IPv4(0, 0, 0, 0), Mask: net.CIDRMask(8, 32)},
+	{IP: net.IPv4(100, 64, 0, 0), Mask: net.CIDRMask(10, 32)},
+	{IP: net.IPv4(240, 0, 0, 0), Mask: net.CIDRMask(4, 32)},
+}
+
+// IsPublic reports whether ip is the kind of address the internet routes. It says
+// nothing about whether anything can actually reach it: firewalls and missing
+// port forwarding still get in the way, and only an outside check proves that. A
+// cloud machine with a private address and a mapped public one looks private here,
+// so treat "false" as unknown, never as safe.
 func IsPublic(ip string) bool {
 	addr := net.ParseIP(ip)
-	if addr == nil || addr.IsPrivate() || addr.IsLoopback() || addr.IsLinkLocalUnicast() {
+	if addr == nil || !addr.IsGlobalUnicast() || addr.IsPrivate() {
 		return false
 	}
-	shared := net.IPNet{IP: net.IPv4(100, 64, 0, 0), Mask: net.CIDRMask(10, 32)}
-	return !shared.Contains(addr)
+	for _, r := range notRoutable {
+		if r.Contains(addr) {
+			return false
+		}
+	}
+	return true
 }
 
 // LocalIP finds the address this machine uses on its network. Dialing UDP sends
@@ -66,6 +80,9 @@ func PublicIP(ctx context.Context) (string, error) {
 func traceIP(body string) (string, error) {
 	for _, line := range strings.Split(body, "\n") {
 		if ip, ok := strings.CutPrefix(line, "ip="); ok {
+			if net.ParseIP(ip) == nil {
+				return "", fmt.Errorf("the address service answered %q, which isn't an address", ip)
+			}
 			return ip, nil
 		}
 	}
