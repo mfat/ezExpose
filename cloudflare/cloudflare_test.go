@@ -88,8 +88,8 @@ func TestPointCreatesThenFollowsTheAddress(t *testing.T) {
 	c := client(t, f)
 	ctx := context.Background()
 	for _, ip := range []string{"192.168.1.20", "192.168.1.20", "192.168.1.31"} {
-		if err := c.Point(ctx, "zone1", host, ip); err != nil {
-			t.Fatal(err)
+		if owned, err := c.Point(ctx, "zone1", host, ip); err != nil || !owned {
+			t.Fatal(owned, err)
 		}
 	}
 	if got := strings.Join(f.writes, ","); got != "POST 192.168.1.20,PATCH 192.168.1.31" {
@@ -99,7 +99,7 @@ func TestPointCreatesThenFollowsTheAddress(t *testing.T) {
 
 func TestPointNeverTakesOverSomeoneElsesRecord(t *testing.T) {
 	f := &fakeAPI{records: []record{{ID: "r", Type: "A", Name: host, Content: "203.0.113.9"}}}
-	err := client(t, f).Point(context.Background(), "zone1", host, "192.168.1.20")
+	_, err := client(t, f).Point(context.Background(), "zone1", host, "192.168.1.20")
 	if err == nil || !strings.Contains(err.Error(), "left alone") || len(f.writes) != 0 {
 		t.Fatalf("err %v, writes %v", err, f.writes)
 	}
@@ -107,8 +107,9 @@ func TestPointNeverTakesOverSomeoneElsesRecord(t *testing.T) {
 
 func TestPointAcceptsARecordThatAlreadyMatches(t *testing.T) {
 	f := &fakeAPI{records: []record{{ID: "r", Type: "A", Name: host, Content: "192.168.1.20"}}}
-	if err := client(t, f).Point(context.Background(), "zone1", host, "192.168.1.20"); err != nil || len(f.writes) != 0 {
-		t.Fatalf("err %v, writes %v", err, f.writes)
+	owned, err := client(t, f).Point(context.Background(), "zone1", host, "192.168.1.20")
+	if err != nil || owned || len(f.writes) != 0 {
+		t.Fatalf("owned %v, err %v, writes %v", owned, err, f.writes)
 	}
 }
 
@@ -128,8 +129,11 @@ func TestAnotherInstallsRecordIsNotOurs(t *testing.T) {
 	for _, legacy := range []string{other, "Managed by ezExpose"} {
 		f := &fakeAPI{records: []record{{ID: "r", Type: "A", Name: host, Content: "203.0.113.9", Comment: legacy}}}
 		c := client(t, f)
-		if err := c.Point(context.Background(), "zone1", host, "192.168.1.20"); err == nil {
+		if _, err := c.Point(context.Background(), "zone1", host, "192.168.1.20"); err == nil {
 			t.Errorf("%q: took over the record", legacy)
+		}
+		if got, err := c.Pointing(context.Background(), "zone1", host); err != nil || got != "" {
+			t.Errorf("%q: pointing %q, %v", legacy, got, err)
 		}
 		if err := c.Remove(context.Background(), "zone1", host); err != nil || len(f.writes) != 0 {
 			t.Errorf("%q: err %v, writes %v", legacy, err, f.writes)
@@ -153,7 +157,7 @@ func TestAClientNeedsAnInstallID(t *testing.T) {
 	f := &fakeAPI{}
 	zero := client(t, f)
 	zero.owner = ""
-	if err := zero.Point(context.Background(), "zone1", host, "192.168.1.20"); err == nil || len(f.writes) != 0 {
+	if _, err := zero.Point(context.Background(), "zone1", host, "192.168.1.20"); err == nil || len(f.writes) != 0 {
 		t.Fatalf("a client with no install ID wrote: %v, %v", err, f.writes)
 	}
 }

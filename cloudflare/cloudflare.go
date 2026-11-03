@@ -154,29 +154,46 @@ func (c Client) records(ctx context.Context, zone, host string) ([]record, error
 	return found, nil
 }
 
-// Point makes host resolve to ip. A record it didn't create is left alone.
-func (c Client) Point(ctx context.Context, zone, host, ip string) error {
+// Point makes host resolve to ip. A record it didn't create is left alone. owned
+// is true when the record is this install's, false when someone else's record
+// already says the same thing: that one can be used, but never deleted.
+func (c Client) Point(ctx context.Context, zone, host, ip string) (owned bool, err error) {
+	if c.owner == "" {
+		return false, errors.New("this client has no install ID; use New")
+	}
 	found, err := c.records(ctx, zone, host)
 	if err != nil {
-		return err
-	}
-	if c.owner == "" {
-		return errors.New("this client has no install ID; use New")
+		return false, err
 	}
 	want := record{Type: "A", Name: host, Content: ip, TTL: ttl, Comment: c.comment()}
 	path := "/zones/" + zone + "/dns_records"
 	switch {
 	case len(found) == 0:
-		return c.call(ctx, http.MethodPost, path, want, nil)
+		return true, c.call(ctx, http.MethodPost, path, want, nil)
 	case len(found) == 1 && c.ours(found[0]):
 		if found[0].Content == ip {
-			return nil
+			return true, nil
 		}
-		return c.call(ctx, http.MethodPatch, path+"/"+found[0].ID, want, nil)
+		return true, c.call(ctx, http.MethodPatch, path+"/"+found[0].ID, want, nil)
 	case len(found) == 1 && found[0].Content == ip:
-		return nil
+		return false, nil
 	}
-	return fmt.Errorf("%s already has a DNS record that ezExpose didn't create, so it was left alone", host)
+	return false, fmt.Errorf("%s already has a DNS record that ezExpose didn't create, so it was left alone", host)
+}
+
+// Pointing returns where this install's record for host points, or "" if it
+// has none.
+func (c Client) Pointing(ctx context.Context, zone, host string) (string, error) {
+	found, err := c.records(ctx, zone, host)
+	if err != nil {
+		return "", err
+	}
+	for _, r := range found {
+		if c.ours(r) {
+			return r.Content, nil
+		}
+	}
+	return "", nil
 }
 
 // Remove deletes the record if this install created it.

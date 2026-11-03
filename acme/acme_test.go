@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/mfat/ezExpose/fetch"
 )
 
 func TestCertificatesDontDependOnLocalDNS(t *testing.T) {
@@ -25,25 +23,12 @@ func TestCertificatePaths(t *testing.T) {
 	}
 }
 
-func TestADamagedCachedLegoIsNotTrusted(t *testing.T) {
-	dir := t.TempDir()
-	scripts := map[string]string{
-		"pinned":  "#!/bin/sh\necho lego version " + fetch.LegoVersion + " linux/amd64\n",
-		"other":   "#!/bin/sh\necho lego version 4.0.0 linux/amd64\n",
-		"crashes": "#!/bin/sh\nexit 1\n",
-		"garbage": "\x7fELF\x00\x00 cut short",
+func TestForceRenewsEarly(t *testing.T) {
+	if args := strings.Join(Issuer{Force: true}.Args("a.example.com"), " "); !strings.Contains(args, "--renew-force") {
+		t.Fatal(args)
 	}
-	for name, body := range scripts {
-		path := filepath.Join(dir, name)
-		if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if got := works(context.Background(), path); got != (name == "pinned") {
-			t.Errorf("%s: works = %v", name, got)
-		}
-	}
-	if works(context.Background(), filepath.Join(dir, "missing")) {
-		t.Error("a missing lego works")
+	if args := strings.Join(Issuer{}.Args("a.example.com"), " "); strings.Contains(args, "--renew-force") {
+		t.Fatal(args)
 	}
 }
 

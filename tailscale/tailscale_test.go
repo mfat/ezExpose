@@ -42,7 +42,7 @@ func TestProxyingTellsOursFromSomeoneElses(t *testing.T) {
 		"shared": {`{"Web":{"box.tail1.ts.net:443":{"Handlers":{"/":{"Proxy":"x"},"/a":{"Proxy":"y"}}}}}`, "something else"},
 	}
 	for name, tc := range cases {
-		got, err := fake(tc.out, nil).Proxying(context.Background(), host)
+		got, err := fake(tc.out, nil).Proxying(context.Background(), host, 443)
 		if err != nil || got != tc.want {
 			t.Errorf("%s: got %q, %v", name, got, err)
 		}
@@ -87,7 +87,7 @@ func (d *daemon) cli() CLI {
 
 func TestServeExplainsTheOperatorStep(t *testing.T) {
 	d := &daemon{status: `{}`, fail: errors.New("exit status 1")}
-	err := d.cli().Serve(context.Background(), box, ours)
+	err := d.cli().Serve(context.Background(), box, 443, ours)
 	if err == nil || !strings.Contains(err.Error(), "--operator") {
 		t.Fatalf("got %v", err)
 	}
@@ -96,7 +96,7 @@ func TestServeExplainsTheOperatorStep(t *testing.T) {
 func TestServeTakesAFreePortAndIsSafeToRepeat(t *testing.T) {
 	d := &daemon{status: `{}`}
 	for range 2 {
-		if err := d.cli().Serve(context.Background(), box, ours); err != nil {
+		if err := d.cli().Serve(context.Background(), box, 443, ours); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -113,10 +113,10 @@ func TestNeverTouchesSomeoneElsesRoute(t *testing.T) {
 	}
 	for name, status := range foreign {
 		d := &daemon{status: status}
-		if err := d.cli().Serve(context.Background(), box, ours); !errors.Is(err, ErrNotOurs) {
+		if err := d.cli().Serve(context.Background(), box, 443, ours); !errors.Is(err, ErrNotOurs) {
 			t.Errorf("%s: serve got %v", name, err)
 		}
-		if err := d.cli().Close(context.Background(), box, ours); !errors.Is(err, ErrNotOurs) {
+		if err := d.cli().Close(context.Background(), box, 443, ours); !errors.Is(err, ErrNotOurs) {
 			t.Errorf("%s: close got %v", name, err)
 		}
 		if len(d.changes) != 0 || d.status != status {
@@ -127,14 +127,14 @@ func TestNeverTouchesSomeoneElsesRoute(t *testing.T) {
 
 func TestCloseConfirmsItReallyStopped(t *testing.T) {
 	d := &daemon{status: route(ours)}
-	if err := d.cli().Close(context.Background(), box, ours); err != nil {
+	if err := d.cli().Close(context.Background(), box, 443, ours); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Join(d.changes, ";") != "serve --https=443 off" {
 		t.Fatalf("ran: %v", d.changes)
 	}
 	// Already closed is fine, and changes nothing.
-	if err := d.cli().Close(context.Background(), box, ours); err != nil || len(d.changes) != 1 {
+	if err := d.cli().Close(context.Background(), box, 443, ours); err != nil || len(d.changes) != 1 {
 		t.Fatalf("second close: %v, %v", err, d.changes)
 	}
 }
@@ -146,11 +146,21 @@ func TestCloseReportsARouteThatSurvived(t *testing.T) {
 		}
 		return nil, nil
 	}}
-	if err := stuck.Close(context.Background(), box, ours); err == nil {
+	if err := stuck.Close(context.Background(), box, 443, ours); err == nil {
 		t.Error("claimed closed while Tailscale still forwards")
 	}
 	d := &daemon{status: route(ours), fail: errors.New("exit status 1")}
-	if err := d.cli().Close(context.Background(), box, ours); err == nil {
+	if err := d.cli().Close(context.Background(), box, 443, ours); err == nil {
 		t.Error("a failed stop looked fine")
+	}
+}
+
+func TestEachPortIsSeparate(t *testing.T) {
+	d := &daemon{status: route("http://127.0.0.1:3000")}
+	if err := d.cli().Serve(context.Background(), box, 8443, ours); err != nil {
+		t.Fatal(err)
+	}
+	if len(d.changes) != 1 || d.changes[0] != "serve --bg --https=8443 "+ours {
+		t.Fatalf("ran: %v", d.changes)
 	}
 }

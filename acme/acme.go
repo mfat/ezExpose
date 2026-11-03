@@ -9,9 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
-	"time"
 
 	"github.com/mfat/ezExpose/fetch"
 )
@@ -21,6 +19,7 @@ type Issuer struct {
 	Tools     string // where the pinned lego is kept
 	Data      string // lego's account and certificates
 	TokenFile string // an owner-only file holding the Cloudflare token
+	Force     bool   // renew even if it isn't due, for testing renewal
 	Report    fetch.Report
 }
 
@@ -36,17 +35,22 @@ func (i Issuer) KeyFile(host string) string {
 // Networks that intercept DNS answer that lookup with a stale "no such name", so
 // it could never succeed. Let's Encrypt checks from outside, and Cloudflare is quick.
 func (i Issuer) Args(host string) []string {
-	return []string{"run", "--accept-tos", "--dns", "cloudflare", "--dns.propagation.wait", "30s",
+	args := []string{"run", "--accept-tos", "--dns", "cloudflare", "--dns.propagation.wait", "30s",
 		"--domains", host, "--path", i.Data, "--log.format", "text"}
+	if i.Force {
+		args = append(args, "--renew-force")
+	}
+	return args
 }
 
 // Issue gets or renews the certificate. lego reads the token from its file, so it
-// never shows up in a process list. Run again, it only acts when renewal is due.
+// never shows up in a process list. lego 5's run does both: with a certificate
+// already there, it only renews when about a third of its lifetime is left.
 func (i Issuer) Issue(ctx context.Context, host string) error {
 	if err := ownerOnly(i.TokenFile); err != nil {
 		return err
 	}
-	lego, err := i.fetchLego(ctx)
+	lego, err := fetch.Install(ctx, i.Tools, fetch.Lego, i.Report)
 	if err != nil {
 		return err
 	}
@@ -64,47 +68,6 @@ func lastLines(out []byte, n int) string {
 		lines = lines[len(lines)-n:]
 	}
 	return strings.Join(lines, "\n")
-}
-
-// fetchLego downloads the pinned lego the first time. The folder only appears
-// once complete and verified, but files can still go missing or get damaged
-// later, so a copy that doesn't answer with its version is fetched again.
-func (i Issuer) fetchLego(ctx context.Context) (string, error) {
-	final := filepath.Join(i.Tools, "lego-"+fetch.LegoVersion)
-	binary := filepath.Join(final, "lego")
-	if works(ctx, binary) {
-		return binary, nil
-	}
-	if err := os.RemoveAll(final); err != nil {
-		return "", err
-	}
-	url, sum, err := fetch.LegoRelease(runtime.GOARCH)
-	if err != nil {
-		return "", err
-	}
-	if err := os.MkdirAll(i.Tools, 0o700); err != nil {
-		return "", err
-	}
-	staged, err := os.MkdirTemp(i.Tools, ".download-")
-	if err != nil {
-		return "", err
-	}
-	defer os.RemoveAll(staged)
-	if err := fetch.ExtractLego(ctx, url, sum, staged, i.Report); err != nil {
-		return "", fmt.Errorf("downloading lego: %w", err)
-	}
-	if err := os.Chmod(staged, 0o755); err != nil {
-		return "", err
-	}
-	return binary, os.Rename(staged, final)
-}
-
-// works reports whether binary runs and is the pinned lego.
-func works(ctx context.Context, binary string) bool {
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, binary, "--version").Output()
-	return err == nil && strings.Contains(string(out), fetch.LegoVersion)
 }
 
 // ownerOnly refuses a token file that other users could read or change.
