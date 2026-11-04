@@ -429,9 +429,16 @@ func TestAnUnreachablePublicMachineIsExplained(t *testing.T) {
 	if CodeOf(err) != CertificateFailed || !strings.Contains(err.Error(), "forward port 443") {
 		t.Fatalf("%v", err)
 	}
+	if len(w.proxy.sites) != 0 {
+		t.Fatalf("left the site served without a certificate: %+v", w.proxy.sites)
+	}
 	list, _ := m.List()
-	if len(list) != 1 || list[0].Status != state.Failed {
+	if len(list) != 1 || list[0].Status != state.Failed || list[0].Resource(state.CaddySite) != nil {
 		t.Fatalf("%+v", list)
+	}
+	w.proxy.unreachable = false
+	if e, err := m.Apply(ctx, public); err != nil || e.Status != state.Active || len(w.proxy.sites) != 1 {
+		t.Fatalf("retry: %+v, %v", e, err)
 	}
 	if err := m.Remove(ctx, list[0].ID); err != nil {
 		t.Fatal(err)

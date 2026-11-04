@@ -721,7 +721,9 @@ func (m *Manager) serve(ctx context.Context, st *state.State, e *state.Exposure)
 	}
 	m.say("Starting Caddy for %s...", e.URL())
 	if err := m.Proxy.Apply(ctx, m.sites(st, "")); err != nil {
-		return wrap(Failed, err)
+		// Caddy keeps its old config when it refuses a new one, so the site isn't live.
+		e.Drop(state.CaddySite)
+		return errors.Join(wrap(Failed, err), m.save(st))
 	}
 	m.say("Waiting for a trusted certificate. Let's Encrypt can take a minute...")
 	addr := listenAddr(e.Resource(state.CaddySite).Target, e.Port)
@@ -729,6 +731,14 @@ func (m *Manager) serve(ctx context.Context, st *state.State, e *state.Exposure)
 		addr = "127.0.0.1" + addr
 	}
 	if err := m.Proxy.Check(ctx, addr, e.Host); err != nil {
+		// Take the site back out: a failure shouldn't leave it served half-working.
+		if rollback := m.Proxy.Apply(ctx, m.sites(st, e.ID)); rollback != nil {
+			return errors.Join(wrap(CertificateFailed, err), fmt.Errorf("and couldn't take the site back out: %w", rollback))
+		}
+		e.Drop(state.CaddySite)
+		if saveErr := m.save(st); saveErr != nil {
+			return errors.Join(wrap(CertificateFailed, err), saveErr)
+		}
 		if e.Access == state.Public {
 			return errorf(CertificateFailed, "%v\n  Let's Encrypt has to reach port 443 here from the internet. If this machine is at "+
 				"home, forward port 443 on your router to it. Some internet providers share one address between "+
