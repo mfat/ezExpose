@@ -1,11 +1,13 @@
 package caddy
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestPublicSiteUsesPort443Alone(t *testing.T) {
@@ -125,7 +127,9 @@ func TestRealCaddyAcceptsTheOutput(t *testing.T) {
 	if err != nil {
 		t.Skip("caddy isn't installed")
 	}
-	if v, _ := exec.Command(bin, "version").Output(); !strings.HasPrefix(string(v), pinnedCaddy+" ") {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if v, _ := exec.CommandContext(ctx, bin, "version").Output(); !strings.HasPrefix(string(v), pinnedCaddy+" ") {
 		t.Skipf("found Caddy %s, want %s", strings.TrimSpace(string(v)), pinnedCaddy)
 	}
 	dir := t.TempDir()

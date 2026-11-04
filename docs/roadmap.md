@@ -62,12 +62,31 @@ Proven on the same server on 2026-11-04:
 
 ## Before the UI
 
+Done on 2026-11-04:
+
+- `plan --out` and `apply --plan-file`: a plan is applied only if working it out again
+  gives the same result, so a UI can't approve one thing and get another.
+- With `--json`, one object per line: progress events, then the result.
+- `version --json` reports ezExpose's version, commands, features and pinned tools, and
+  whether Tailscale is new enough. Tailscale before 1.52 is refused.
+- Fuzz tests for the Caddy input checks, the address checks, download ranges, the record
+  file and version comparison. Run them with limits, as below.
+- IPv6-only machines get AAAA records and the right advice. Public access behind
+  carrier-grade NAT is refused up front, and a certificate that never arrives explains
+  port forwarding.
+
+Still to do:
+
 - A reboot test and a second Linux distribution, on a spare machine.
-- `apply --plan-file`, so a UI can approve one exact plan and apply that.
-- Progress as JSON lines, for apps reading it over SSH.
-- Checking the installed Tailscale version, fuzz tests for the Caddy input checks, and
-  tests on IPv6-only machines and behind carrier-grade NAT.
 - An install script and a first release.
+
+Fuzzing uses every core and a lot of memory by default, and once froze a desktop. Run
+one target at a time, limited:
+
+```bash
+systemd-run --user --scope -p MemoryMax=3G -p CPUQuota=200% nice -n 19 \
+  go test ./caddy -run '^$' -fuzz FuzzRenderCanOnlyFillFields -fuzztime 20s -parallel 2
+```
 
 ## 5. Then the user experience and UI
 
