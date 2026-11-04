@@ -192,3 +192,67 @@ func TestPlanFileRoundTrip(t *testing.T) {
 		t.Fatal("a plan from another schema was read")
 	}
 }
+
+// results counts the result objects on stdout: there must be exactly one.
+func results(t *testing.T, out string) int {
+	t.Helper()
+	n := 0
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		var obj map[string]any
+		if err := json.Unmarshal([]byte(line), &obj); err != nil {
+			t.Fatalf("not JSON: %q", line)
+		}
+		if obj["event"] == "result" {
+			n++
+		}
+	}
+	return n
+}
+
+func TestEveryJSONRunEndsWithExactlyOneResult(t *testing.T) {
+	runs := map[string][]string{
+		"doctor, nothing ready": {"doctor", "--json"},
+		"unknown flag":          {"status", "--json", "--bogus"},
+		"unknown command":       {"bogus", "--json"},
+		"missing ID":            {"remove", "--json"},
+		"bad request":           {"apply", "--json", "--backend", "nope", "--access", "private"},
+		"status":                {"status", "--json"},
+	}
+	for name, args := range runs {
+		a, out, errs := app(t, "")
+		a.Doctor = func(context.Context) []Check { return []Check{{Name: "Linux", For: "all"}} }
+		code := a.Run(context.Background(), args)
+		if n := results(t, out.String()); n != 1 {
+			t.Errorf("%s: %d results:\n%s", name, n, out)
+		}
+		if errs.Len() != 0 {
+			t.Errorf("%s: text on stderr with --json: %q", name, errs)
+		}
+		got := envelope(t, out.Bytes())
+		if (code == 0) != (got["ok"] == true) {
+			t.Errorf("%s: exit %d but ok=%v", name, code, got["ok"])
+		}
+		if code == 2 && got["error"].(map[string]any)["code"] != string(manager.Usage) {
+			t.Errorf("%s: %s", name, out)
+		}
+	}
+}
+
+func TestReconcileSaysWhenSomethingNeedsAttention(t *testing.T) {
+	a, out, _ := app(t, "")
+	st, _ := a.Manager.Store.Load()
+	st.Exposures = []state.Exposure{{ID: "exp_1", Backend: "127.0.0.1:1", Access: state.Private, Host: "box.example.ts.net",
+		Port: 443, Status: state.Failed, Error: "earlier failure",
+		Resources: []state.Resource{{Kind: state.TailscaleRoute, Ref: "box:443", Done: true, Owned: true}}}}
+	if err := a.Manager.Store.Save(st); err != nil {
+		t.Fatal(err)
+	}
+	if code := a.Run(context.Background(), []string{"reconcile", "--json"}); code != 1 {
+		t.Fatalf("exit %d", code)
+	}
+	got := envelope(t, out.Bytes())
+	if results(t, out.String()) != 1 || got["error"].(map[string]any)["code"] != string(manager.NeedsAttention) ||
+		len(got["exposures"].([]any)) != 1 {
+		t.Fatalf("%s", out)
+	}
+}

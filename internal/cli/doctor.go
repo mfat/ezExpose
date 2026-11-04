@@ -98,8 +98,12 @@ func (a *App) doctor(ctx context.Context, args []string) error {
 		err = &manager.Error{Code: manager.Failed, Err: errors.New("this machine isn't ready for any kind of access yet")}
 	}
 	if a.json {
-		a.emit(map[string]any{"checks": checks, "ready": ready}, err == nil)
-		return err
+		if err != nil {
+			a.fail(map[string]any{"checks": checks, "ready": ready}, err)
+			return err
+		}
+		a.emit(map[string]any{"checks": checks, "ready": ready}, true)
+		return nil
 	}
 	for _, c := range checks {
 		mark := "✓"

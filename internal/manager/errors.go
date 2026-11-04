@@ -22,6 +22,8 @@ const (
 	PortUnavailable   Code = "port"               // the port is taken or needs permission
 	CertificateFailed Code = "certificate"        // no trusted certificate
 	PlanChanged       Code = "plan_changed"       // the machine changed since the plan was made
+	NeedsAttention    Code = "needs_attention"    // reconcile found something not working
+	Usage             Code = "usage"              // the command was used wrongly
 	Failed            Code = "failed"             // anything else
 )
 

@@ -53,6 +53,8 @@ type App struct {
 	Progress *Progress
 
 	json bool
+	// emitted is set once the result has been written: there's only ever one.
+	emitted bool
 }
 
 const usage = `ezExpose puts apps you already run behind real HTTPS.
@@ -108,8 +110,14 @@ func (a *App) Run(ctx context.Context, args []string) int {
 			a.Progress.set(a.Err)
 		}
 	}
+	wantsJSON := slices.Contains(args, "--json") || slices.Contains(args, "-json")
 	if !ok {
-		fmt.Fprintf(a.Err, "ezexpose: unknown command %q. See: ezexpose help\n", args[0])
+		err := fmt.Errorf("unknown command %q. See: ezexpose help", args[0])
+		if wantsJSON {
+			a.fail(nil, &manager.Error{Code: manager.Usage, Err: err})
+		} else {
+			fmt.Fprintf(a.Err, "ezexpose: %v\n", err)
+		}
 		return 2
 	}
 	err := cmd(ctx, args[1:])
@@ -118,14 +126,31 @@ func (a *App) Run(ctx context.Context, args []string) int {
 	case err == nil:
 		return 0
 	case errors.As(err, &bad):
-		fmt.Fprintf(a.Err, "ezexpose %s: %v\n", args[0], err)
+		if wantsJSON {
+			a.fail(nil, &manager.Error{Code: manager.Usage, Err: err})
+		} else {
+			fmt.Fprintf(a.Err, "ezexpose %s: %v\n", args[0], err)
+		}
 		return 2
-	case a.json:
-		a.emit(map[string]any{"error": map[string]string{"code": string(manager.CodeOf(err)), "message": err.Error()}}, false)
+	case a.json || wantsJSON:
+		a.fail(nil, err)
 	default:
 		fmt.Fprintf(a.Err, "✗ %v\n", err)
 	}
 	return 1
+}
+
+// fail writes the result for a failure, with whatever partial payload there is,
+// unless a result has already been written.
+func (a *App) fail(payload map[string]any, err error) {
+	if a.emitted {
+		return
+	}
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	payload["error"] = map[string]string{"code": string(manager.CodeOf(err)), "message": err.Error()}
+	a.emit(payload, false)
 }
 
 type usageError struct{ error }
@@ -146,6 +171,10 @@ func parse(fs *flag.FlagSet, args []string) error {
 
 // emit writes the JSON envelope.
 func (a *App) emit(payload map[string]any, ok bool) {
+	if a.emitted {
+		return
+	}
+	a.emitted = true
 	payload["schema"], payload["ok"], payload["event"] = Schema, ok, "result"
 	_ = json.NewEncoder(a.Out).Encode(payload)
 }
@@ -421,7 +450,24 @@ func (a *App) reconcile(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	return a.showList(list)
+	var attention []string
+	for _, e := range list {
+		if e.Status != state.Active {
+			attention = append(attention, e.ID+" is "+string(e.Status))
+		}
+	}
+	if len(attention) == 0 {
+		return a.showList(list)
+	}
+	problem := &manager.Error{Code: manager.NeedsAttention, Err: errors.New(strings.Join(attention, ", "))}
+	if a.json {
+		a.fail(map[string]any{"exposures": list}, problem)
+		return problem
+	}
+	if err := a.showList(list); err != nil {
+		return err
+	}
+	return problem
 }
 
 func (a *App) renew(ctx context.Context, args []string) error {
