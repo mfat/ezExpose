@@ -19,6 +19,8 @@ import (
 type Systemd struct {
 	Root bool
 	Log  io.Writer
+	// systemctl replaces the real command in tests.
+	systemctl func(ctx context.Context, args ...string) error
 }
 
 // NewSystemd picks system units for root and user units for everyone else.
@@ -49,6 +51,9 @@ func (s Systemd) WantedBy() string {
 
 // Run calls systemctl.
 func (s Systemd) Run(ctx context.Context, args ...string) error {
+	if s.systemctl != nil {
+		return s.systemctl(ctx, args...)
+	}
 	if !s.Root {
 		args = append([]string{"--user"}, args...)
 	}
@@ -107,7 +112,9 @@ func (s Systemd) Write(ctx context.Context, units map[string]string) error {
 	return s.Run(ctx, "daemon-reload")
 }
 
-// Delete stops and removes units. Ones that were never there are fine.
+// Delete stops and removes units. Ones that were never there are fine. A unit
+// keeps its file until it's confirmed stopped, so a failed stop can be retried
+// and is never reported as done.
 func (s Systemd) Delete(ctx context.Context, names ...string) error {
 	dir, err := s.UnitDir()
 	if err != nil {
@@ -119,7 +126,13 @@ func (s Systemd) Delete(ctx context.Context, names ...string) error {
 		if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
 			continue
 		}
-		_ = s.Run(ctx, "disable", "--now", name)
+		stopErr := s.Run(ctx, "disable", "--now", name)
+		if s.Active(ctx, name) {
+			if stopErr == nil {
+				stopErr = errors.New("it's still running")
+			}
+			return fmt.Errorf("couldn't stop %s: %w", name, stopErr)
+		}
 		if err := os.Remove(path); err != nil {
 			return err
 		}
