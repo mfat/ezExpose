@@ -82,3 +82,13 @@ func TestIsTailnet(t *testing.T) {
 		}
 	}
 }
+
+func TestAnIPv6MachineIsToldToAddAAAA(t *testing.T) {
+	problem := DNSProblem("a.example.com", "2001:db8::7", nil, func(string) bool { return false })
+	if !strings.Contains(problem, "AAAA  a.example.com  2001:db8::7") {
+		t.Fatal(problem)
+	}
+	if RecordType("203.0.113.7") != "A" || RecordType("2001:db8::7") != "AAAA" {
+		t.Fatal("wrong record types")
+	}
+}

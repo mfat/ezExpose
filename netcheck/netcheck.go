@@ -26,6 +26,14 @@ var notRoutable = []net.IPNet{
 	{IP: net.IPv4(240, 0, 0, 0), Mask: net.CIDRMask(4, 32)},
 }
 
+// RecordType is the DNS record that holds ip: A for IPv4, AAAA for IPv6.
+func RecordType(ip string) string {
+	if addr := net.ParseIP(ip); addr != nil && addr.To4() == nil {
+		return "AAAA"
+	}
+	return "A"
+}
+
 // IsTailnet reports whether ip is in the range Tailscale gives its devices.
 func IsTailnet(ip string) bool {
 	addr := net.ParseIP(ip)
@@ -53,25 +61,51 @@ func IsPublic(ip string) bool {
 // LocalIP finds the address this machine uses on its network. Dialing UDP sends
 // nothing.
 func LocalIP() string {
-	conn, err := net.Dial("udp", "192.0.2.1:9")
-	if err != nil {
-		return ""
-	}
-	defer conn.Close()
-	if addr, ok := conn.LocalAddr().(*net.UDPAddr); ok {
-		return addr.IP.String()
+	// IPv4 first; an IPv6-only machine has no route for it.
+	for _, target := range []string{"192.0.2.1:9", "[2001:db8::1]:9"} {
+		conn, err := net.Dial("udp", target)
+		if err != nil {
+			continue
+		}
+		addr, ok := conn.LocalAddr().(*net.UDPAddr)
+		conn.Close()
+		if ok {
+			return addr.IP.String()
+		}
 	}
 	return ""
+}
+
+// cloudflareDNS is tried by IPv4 first, then IPv6 for machines without IPv4.
+var cloudflareDNS = []string{"1.1.1.1", "[2606:4700:4700::1111]"}
+
+// fromCloudflare fetches path from the first of Cloudflare's addresses that answers.
+func fromCloudflare(ctx context.Context, path string, header http.Header) (*http.Response, error) {
+	var last error
+	for _, host := range cloudflareDNS {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+host+path, nil)
+		if err != nil {
+			return nil, err
+		}
+		for k, v := range header {
+			req.Header[k] = v
+		}
+		resp, err := client.Do(req)
+		if err == nil {
+			return resp, nil
+		}
+		last = err
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	return nil, last
 }
 
 // PublicIP asks an outside service, so only call it when the user chose public
 // access.
 func PublicIP(ctx context.Context) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://1.1.1.1/cdn-cgi/trace", nil)
-	if err != nil {
-		return "", err
-	}
-	resp, err := client.Do(req)
+	resp, err := fromCloudflare(ctx, "/cdn-cgi/trace", nil)
 	if err != nil {
 		return "", err
 	}
@@ -110,13 +144,8 @@ func Resolve(ctx context.Context, host string) ([]string, error) {
 }
 
 func resolveType(ctx context.Context, host, kind string, code int) ([]string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		"https://1.1.1.1/dns-query?type="+kind+"&name="+url.QueryEscape(host), nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Accept", "application/dns-json")
-	resp, err := client.Do(req)
+	resp, err := fromCloudflare(ctx, "/dns-query?type="+kind+"&name="+url.QueryEscape(host),
+		http.Header{"Accept": {"application/dns-json"}})
 	if err != nil {
 		return nil, err
 	}
@@ -155,7 +184,7 @@ func DNSProblem(host, ip string, found []string, onHost func(string) bool) strin
 	}
 	if !matched {
 		return fmt.Sprintf("%s doesn't point to this machine yet. At your domain provider, add this record:\n"+
-			"    A  %s  %s\n"+
+			"    "+RecordType(ip)+"  %s  %s\n"+
 			"  If a proxy is on for this name, such as Cloudflare's orange cloud, turn it off.", host, host, ip)
 	}
 	if len(others) > 0 {

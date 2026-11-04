@@ -591,6 +591,11 @@ func (m *Manager) upPublic(ctx context.Context, st *state.State, e *state.Exposu
 	if !netcheck.IsPublic(ip) {
 		return errorf(PortUnavailable, "this machine's address %s isn't public, so the internet can't reach it", ip)
 	}
+	if local := m.Net.LocalIP(); netcheck.IsTailnet(local) {
+		return errorf(PortUnavailable, "this machine's network address %s is in the range internet providers use to "+
+			"share one public address between customers (CGNAT), or it's sending everything through a Tailscale "+
+			"exit node. Either way, the internet can't reach it directly. Use private access instead", local)
+	}
 	if e.Cloudflare {
 		if err := m.pointDNS(ctx, st, e, ip); err != nil {
 			return err
@@ -690,6 +695,11 @@ func (m *Manager) serve(ctx context.Context, st *state.State, e *state.Exposure)
 		addr = "127.0.0.1" + addr
 	}
 	if err := m.Proxy.Check(ctx, addr, e.Host); err != nil {
+		if e.Access == state.Public {
+			return errorf(CertificateFailed, "%v\n  Let's Encrypt has to reach port 443 here from the internet. If this machine is at "+
+				"home, forward port 443 on your router to it. Some internet providers share one address between "+
+				"customers (CGNAT) and don't allow that at all; then use private access", err)
+		}
 		return wrap(CertificateFailed, err)
 	}
 	return m.finish(st, e, state.CaddySite, true)

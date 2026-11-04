@@ -390,3 +390,53 @@ func TestAFailureThatChangedNothingLeavesNoRecord(t *testing.T) {
 		t.Fatalf("%+v, %v", p, err)
 	}
 }
+
+func TestPublicOnAnIPv6OnlyMachine(t *testing.T) {
+	w := newWorld(t)
+	w.net.public, w.net.local = "2001:db8::7", "2001:db8::7"
+	w.net.dns["app.example.com"] = []string{"2001:db8::7"}
+	e, err := w.manager().Apply(ctx, public)
+	if err != nil || e.Status != state.Active || w.dns.records["app.example.com"].ip != "2001:db8::7" {
+		t.Fatalf("%+v, %v, %v", e, err, w.dns.records)
+	}
+	w.net.taken[":443"] = syscall.EADDRINUSE
+	other := public
+	other.Host, other.Backend = "b.example.com", "127.0.0.1:9090"
+	w.net.dns["b.example.com"] = []string{"2001:db8::7"}
+	if _, err := w.manager().Apply(ctx, other); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPublicBehindCGNATIsRefusedClearly(t *testing.T) {
+	w := newWorld(t)
+	w.net.local = "100.72.1.9" // the provider's shared range
+	_, err := w.manager().Apply(ctx, public)
+	if CodeOf(err) != PortUnavailable || !strings.Contains(err.Error(), "CGNAT") {
+		t.Fatalf("%v", err)
+	}
+	if len(w.dns.records) != 0 || len(w.proxy.sites) != 0 {
+		t.Fatal("changed something")
+	}
+}
+
+func TestAnUnreachablePublicMachineIsExplained(t *testing.T) {
+	w := newWorld(t)
+	w.net.dns["app.example.com"] = []string{"203.0.113.7"}
+	w.proxy.unreachable = true // Let's Encrypt can't get in: no port forwarding
+	m := w.manager()
+	_, err := m.Apply(ctx, public)
+	if CodeOf(err) != CertificateFailed || !strings.Contains(err.Error(), "forward port 443") {
+		t.Fatalf("%v", err)
+	}
+	list, _ := m.List()
+	if len(list) != 1 || list[0].Status != state.Failed {
+		t.Fatalf("%+v", list)
+	}
+	if err := m.Remove(ctx, list[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if len(w.proxy.sites) != 0 || len(w.dns.records) != 0 {
+		t.Fatalf("left behind: %+v, %v", w.proxy.sites, w.dns.records)
+	}
+}

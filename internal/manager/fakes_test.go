@@ -104,10 +104,11 @@ func (f *fakeDNS) Remove(_ context.Context, _, host string) error {
 }
 
 type fakeProxy struct {
-	c       *crasher
-	sites   []caddy.Site
-	applied int
-	fail    error
+	c           *crasher
+	unreachable bool
+	sites       []caddy.Site
+	applied     int
+	fail        error
 }
 
 func (f *fakeProxy) Apply(_ context.Context, sites []caddy.Site) error {
@@ -121,6 +122,9 @@ func (f *fakeProxy) Apply(_ context.Context, sites []caddy.Site) error {
 	return nil
 }
 func (f *fakeProxy) Check(_ context.Context, _, host string) error {
+	if f.unreachable {
+		return errors.New("no trusted certificate for " + host + " yet: timeout")
+	}
 	if slices.ContainsFunc(f.sites, func(s caddy.Site) bool { return s.Host == host }) {
 		return nil
 	}

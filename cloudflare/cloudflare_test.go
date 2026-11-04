@@ -161,3 +161,37 @@ func TestAClientNeedsAnInstallID(t *testing.T) {
 		t.Fatalf("a client with no install ID wrote: %v, %v", err, f.writes)
 	}
 }
+
+func TestIPv6GetsAnAAAARecord(t *testing.T) {
+	f := &fakeAPI{}
+	if _, err := client(t, f).Point(context.Background(), "zone1", host, "2001:db8::7"); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.records) != 1 || f.records[0].Type != "AAAA" {
+		t.Fatalf("%+v", f.records)
+	}
+	if got, _ := client(t, f).Pointing(context.Background(), "zone1", host); got != "2001:db8::7" {
+		t.Fatalf("pointing %q", got)
+	}
+}
+
+func TestMovingToIPv6ReplacesOurOldRecord(t *testing.T) {
+	f := &fakeAPI{records: []record{{ID: "r", Type: "A", Name: host, Content: "203.0.113.7", Comment: marker + owner}}}
+	if _, err := client(t, f).Point(context.Background(), "zone1", host, "2001:db8::7"); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(f.writes, ",") != "DELETE ,POST 2001:db8::7" || len(f.records) != 1 || f.records[0].Type != "AAAA" {
+		t.Fatalf("writes %v, records %+v", f.writes, f.records)
+	}
+}
+
+func TestAnAliasIsLeftAlone(t *testing.T) {
+	f := &fakeAPI{records: []record{{ID: "r", Type: "CNAME", Name: host, Content: "elsewhere.example.net"}}}
+	_, err := client(t, f).Point(context.Background(), "zone1", host, "203.0.113.7")
+	if err == nil || !strings.Contains(err.Error(), "CNAME") || len(f.writes) != 0 {
+		t.Fatalf("%v, %v", err, f.writes)
+	}
+	if _, err := client(t, f).Point(context.Background(), "zone1", host, "not an ip"); err == nil {
+		t.Fatal("pointed at nonsense")
+	}
+}

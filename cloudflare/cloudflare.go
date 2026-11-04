@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -149,18 +150,35 @@ func (c Client) Zone(ctx context.Context, host string) (string, error) {
 	return "", fmt.Errorf("this token can't see a Cloudflare domain containing %s", host)
 }
 
+// records returns host's address records, A and AAAA.
 func (c Client) records(ctx context.Context, zone, host string) ([]record, error) {
-	q := url.Values{"type": {"A"}, "name.exact": {host}, "per_page": {"100"}}
+	q := url.Values{"name.exact": {host}, "per_page": {"100"}}
 	var all, found []record
 	if err := c.call(ctx, http.MethodGet, "/zones/"+zone+"/dns_records?"+q.Encode(), nil, &all); err != nil {
 		return nil, err
 	}
 	for _, r := range all {
-		if strings.EqualFold(r.Name, host) {
+		if !strings.EqualFold(r.Name, host) {
+			continue
+		}
+		switch r.Type {
+		case "A", "AAAA":
 			found = append(found, r)
+		case "CNAME":
+			return nil, fmt.Errorf("%s is an alias (CNAME) for %s, so it was left alone. Remove the alias first", host, r.Content)
 		}
 	}
 	return found, nil
+}
+
+func ofType(records []record, kind string) []record {
+	var out []record
+	for _, r := range records {
+		if r.Type == kind {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // Point makes host resolve to ip. A record it didn't create is left alone. owned
@@ -170,12 +188,27 @@ func (c Client) Point(ctx context.Context, zone, host, ip string) (owned bool, e
 	if c.owner == "" {
 		return false, errors.New("this client has no install ID; use New")
 	}
-	found, err := c.records(ctx, zone, host)
+	all, err := c.records(ctx, zone, host)
 	if err != nil {
 		return false, err
 	}
-	want := record{Type: "A", Name: host, Content: ip, TTL: ttl, Comment: c.comment()}
+	kind := "A"
+	if addr := net.ParseIP(ip); addr == nil {
+		return false, fmt.Errorf("%q isn't an address", ip)
+	} else if addr.To4() == nil {
+		kind = "AAAA"
+	}
+	want := record{Type: kind, Name: host, Content: ip, TTL: ttl, Comment: c.comment()}
 	path := "/zones/" + zone + "/dns_records"
+	// The machine moved between IPv4 and IPv6: this install's old record goes.
+	for _, r := range all {
+		if r.Type != kind && c.ours(r) {
+			if err := c.call(ctx, http.MethodDelete, path+"/"+r.ID, nil, nil); err != nil {
+				return false, err
+			}
+		}
+	}
+	found := ofType(all, kind)
 	switch {
 	case len(found) == 0:
 		return true, c.call(ctx, http.MethodPost, path, want, nil)
