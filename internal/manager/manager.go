@@ -103,6 +103,9 @@ type Request struct {
 	// Cloudflare lets ezExpose create the public DNS record. LAN access always
 	// uses it.
 	Cloudflare bool
+	// Address is where a LAN name points, such as this machine's Tailscale
+	// address. Left out, it's the address the machine uses on its network.
+	Address string
 	// Confirmed says the person knows HTTPS isn't a login: public access needs it.
 	Confirmed bool
 }
@@ -182,6 +185,9 @@ func checkRequest(r *Request) error {
 		if r.Host == "localhost" || !caddy.ValidHost(r.Host) {
 			return errorf(Invalid, "%q isn't a domain name such as app.example.com", r.Host)
 		}
+		if r.Address != "" && (r.Access != state.LAN || net.ParseIP(r.Address) == nil || netcheck.IsPublic(r.Address)) {
+			return errorf(Invalid, "--address takes a private address, such as this machine's Tailscale one, and only for lan")
+		}
 		if r.Access == state.Public && r.Port != 0 && r.Port != 443 {
 			return errorf(Invalid, "public access uses port 443, because that's where Let's Encrypt checks")
 		}
@@ -243,7 +249,11 @@ func (m *Manager) Plan(ctx context.Context, r Request) (Plan, error) {
 		if e.Port == 0 {
 			e.Port = 8443
 		}
-		steps = append(steps, "Point "+r.Host+" at this machine's local address in Cloudflare",
+		where := "this machine's local address"
+		if r.Address != "" {
+			where = r.Address
+		}
+		steps = append(steps, "Point "+r.Host+" at "+where+" in Cloudflare",
 			"Get a certificate for "+r.Host+" from Let's Encrypt, through Cloudflare",
 			"Serve "+e.URL()+" on your network through Caddy",
 			"Renew the certificate on a timer")
@@ -305,12 +315,25 @@ func (m *Manager) Apply(ctx context.Context, r Request) (state.Exposure, error) 
 			}
 			st.Exposures = append(st.Exposures, state.Exposure{
 				ID: id, Name: r.Name, Backend: r.Backend, Access: r.Access, Host: r.Host, Port: r.Port,
-				Cloudflare: r.Cloudflare || r.Access == state.LAN, Status: state.Applying, Created: m.now(),
+				Cloudflare: r.Cloudflare || r.Access == state.LAN, Address: r.Address, Status: state.Applying, Created: m.now(),
 			})
 			e = &st.Exposures[len(st.Exposures)-1]
 		}
 		if e.Status == state.Removing {
 			return errorf(Invalid, "%s is being removed. Run: ezexpose remove %s", e.ID, e.ID)
+		}
+		if changed := (r.Address != "" && r.Address != e.Address) || (r.Port != 0 && r.Port != e.Port) || (r.Cloudflare && !e.Cloudflare); changed {
+			if len(e.Resources) > 0 {
+				return errorf(Invalid, "%s is already set up differently. Remove it first: ezexpose remove %s", e.ID, e.ID)
+			}
+			// Nothing was set up yet, so the new settings simply replace the old.
+			if r.Address != "" {
+				e.Address = r.Address
+			}
+			e.Cloudflare = e.Cloudflare || r.Cloudflare
+			if r.Port != 0 {
+				e.Port = r.Port
+			}
 		}
 		e.Status, e.Error = state.Applying, ""
 		if err := m.save(st); err != nil {
@@ -550,9 +573,13 @@ func (m *Manager) upLAN(ctx context.Context, st *state.State, e *state.Exposure)
 	if e.Port == 0 {
 		e.Port = 8443
 	}
-	ip := m.Net.LocalIP()
+	ip := m.lanAddress(*e)
 	if ip == "" || netcheck.IsPublic(ip) {
-		return errorf(Invalid, "this machine's address %q isn't a home network one; use public access instead", ip)
+		return errorf(Invalid, "this machine's address %q isn't a home network one. Use public access, "+
+			"or --address with a private one such as its Tailscale address", ip)
+	}
+	if !m.Net.OnThisMachine(ip) {
+		return errorf(Invalid, "%s isn't one of this machine's addresses", ip)
 	}
 	if err := m.pointDNS(ctx, st, e, ip); err != nil {
 		return err
@@ -626,6 +653,14 @@ func (m *Manager) serve(ctx context.Context, st *state.State, e *state.Exposure)
 	return m.finish(st, e, state.CaddySite, true)
 }
 
+// lanAddress is where the exposure's LAN name points.
+func (m *Manager) lanAddress(e state.Exposure) string {
+	if e.Address != "" {
+		return e.Address
+	}
+	return m.Net.LocalIP()
+}
+
 // freePort checks the port can be used, and returns an address to bind if only
 // one of this machine's addresses is free. Tailscale serving the same port on its
 // own address is the usual reason.
@@ -639,7 +674,12 @@ func (m *Manager) freePort(st *state.State, e *state.Exposure) (string, error) {
 	if err == nil {
 		return "", nil
 	}
-	if ip := m.Net.LocalIP(); ip != "" && m.Net.Listen(listenAddr(ip, e.Port)) == nil {
+	// Only the address people are sent to will do.
+	ip := m.Net.LocalIP()
+	if e.Access == state.LAN {
+		ip = m.lanAddress(*e)
+	}
+	if ip != "" && m.Net.Listen(listenAddr(ip, e.Port)) == nil {
 		return ip, nil
 	}
 	if e.Port == 443 {

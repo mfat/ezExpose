@@ -189,7 +189,7 @@ func (m *Manager) Reconcile(ctx context.Context) ([]state.Exposure, error) {
 				}
 			case state.Applying:
 				m.say("Finishing setting up %s...", e.ID)
-				r := Request{Backend: e.Backend, Access: e.Access, Host: e.Host, Port: e.Port, Cloudflare: e.Cloudflare, Confirmed: true}
+				r := Request{Backend: e.Backend, Access: e.Access, Host: e.Host, Port: e.Port, Cloudflare: e.Cloudflare, Address: e.Address, Confirmed: true}
 				if e.Access == state.Private {
 					r.Host = ""
 				}

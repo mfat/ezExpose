@@ -62,7 +62,9 @@ Access:
   private  Over Tailscale, for your own devices. Nothing is opened to the internet.
   public   From anywhere, with your own domain on port 443. Anyone can reach the app,
            so it needs its own login.
-  lan      A real certificate on your home network, through Cloudflare.
+  lan      A real certificate on your home network, through Cloudflare. --address points
+           the name somewhere else on this machine, such as its Tailscale address, so
+           only your tailnet devices can reach it.
 
 Add --json for machine-readable output.
 `
@@ -160,6 +162,7 @@ func requestFlags(fs *flag.FlagSet) *manager.Request {
 	fs.IntVar(&r.Port, "port", 0, "the port people use; picked for you if left out")
 	fs.StringVar(&r.Name, "name", "", "a name to remember it by")
 	fs.BoolVar(&r.Cloudflare, "cloudflare", false, "create the public DNS record through Cloudflare")
+	fs.StringVar(&r.Address, "address", "", "for lan: point the name here, such as this machine's Tailscale address")
 	return r
 }
 

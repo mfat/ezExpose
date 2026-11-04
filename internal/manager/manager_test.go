@@ -293,3 +293,39 @@ func TestACommandWaitsForAnother(t *testing.T) {
 		t.Fatalf("%v", err)
 	}
 }
+
+func TestLANOnTheTailscaleAddress(t *testing.T) {
+	w := newWorld(t)
+	w.net.public, w.net.local = "203.0.113.7", "203.0.113.7" // a server with no home network
+	if _, err := w.manager().Apply(ctx, lan); CodeOf(err) != Invalid || !strings.Contains(err.Error(), "--address") {
+		t.Fatalf("a public address for lan: %v", err)
+	}
+	// Another program holds 8443 on every address but the Tailscale one.
+	w.net.taken[":8443"] = syscall.EADDRINUSE
+	w.net.taken["203.0.113.7:8443"] = syscall.EADDRINUSE
+	r := lan
+	r.Address = "100.68.1.2"
+	e, err := w.manager().Apply(ctx, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w.dns.records["home.example.com"].ip != "100.68.1.2" || w.proxy.sites[0].Bind != "100.68.1.2" || e.Status != state.Active {
+		t.Fatalf("%+v, %v, %+v", e, w.dns.records, w.proxy.sites)
+	}
+	for _, bad := range []string{"203.0.113.9", "nonsense"} {
+		r.Address = bad
+		if _, err := w.manager().Apply(ctx, r); CodeOf(err) != Invalid {
+			t.Errorf("%s: %v", bad, err)
+		}
+	}
+	r.Address = "100.68.1.2"
+	r.Port = 9443
+	if _, err := w.manager().Apply(ctx, r); CodeOf(err) != Invalid || !strings.Contains(err.Error(), "Remove it first") {
+		t.Errorf("changed settings on a live exposure: %v", err)
+	}
+	r.Address = "10.9.9.9"
+	r.Host = "other.example.com"
+	if _, err := w.manager().Apply(ctx, r); CodeOf(err) != Invalid {
+		t.Errorf("an address that isn't this machine's: %v", err)
+	}
+}

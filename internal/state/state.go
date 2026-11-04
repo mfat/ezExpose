@@ -69,12 +69,14 @@ type Exposure struct {
 	Host    string `json:"host"`
 	Port    int    `json:"port"`
 	// Cloudflare is true when ezExpose keeps the DNS record, not the person.
-	Cloudflare bool       `json:"cloudflare,omitempty"`
-	Status     Status     `json:"status,omitempty"`
-	Resources  []Resource `json:"resources"`
-	Created    time.Time  `json:"created,omitzero"`
-	Checked    time.Time  `json:"checked,omitzero"`
-	Error      string     `json:"error,omitempty"`
+	Cloudflare bool `json:"cloudflare,omitempty"`
+	// Address is where a LAN name points, if not this machine's usual address.
+	Address   string     `json:"address,omitempty"`
+	Status    Status     `json:"status,omitempty"`
+	Resources []Resource `json:"resources"`
+	Created   time.Time  `json:"created,omitzero"`
+	Checked   time.Time  `json:"checked,omitzero"`
+	Error     string     `json:"error,omitempty"`
 }
 
 // URL is the address people use.

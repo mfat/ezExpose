@@ -175,10 +175,10 @@ func (f *fakeRenewal) Enable(context.Context) error  { f.on = true; return nil }
 func (f *fakeRenewal) Disable(context.Context) error { f.on = false; return nil }
 
 type fakeNet struct {
-	public, local string
-	dns           map[string][]string
-	taken         map[string]error
-	backends      map[string]bool
+	public, local, tailnet string
+	dns                    map[string][]string
+	taken                  map[string]error
+	backends               map[string]bool
 }
 
 func (f *fakeNet) PublicIP(context.Context) (string, error) { return f.public, nil }
@@ -186,8 +186,8 @@ func (f *fakeNet) LocalIP() string                          { return f.local }
 func (f *fakeNet) Resolve(_ context.Context, host string) ([]string, error) {
 	return f.dns[host], nil
 }
-func (f *fakeNet) OnThisMachine(string) bool { return false }
-func (f *fakeNet) Listen(addr string) error  { return f.taken[addr] }
+func (f *fakeNet) OnThisMachine(addr string) bool { return addr == f.local || addr == f.tailnet }
+func (f *fakeNet) Listen(addr string) error       { return f.taken[addr] }
 func (f *fakeNet) Dial(_ context.Context, addr string) error {
 	if f.backends[addr] {
 		return nil
@@ -219,7 +219,7 @@ func newWorld(t *testing.T) *world {
 		proxy:   &fakeProxy{c: c},
 		certs:   &fakeCerts{c: c, certs: map[string]int{}},
 		renewal: &fakeRenewal{},
-		net: &fakeNet{public: "203.0.113.7", local: "192.168.1.20", dns: map[string][]string{},
+		net: &fakeNet{public: "203.0.113.7", local: "192.168.1.20", tailnet: "100.68.1.2", dns: map[string][]string{},
 			taken: map[string]error{}, backends: map[string]bool{"127.0.0.1:8080": true, "127.0.0.1:9090": true}},
 		dir: t.TempDir(),
 	}
