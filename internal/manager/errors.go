@@ -21,6 +21,7 @@ const (
 	DNSNotReady       Code = "dns"                // the name doesn't point here yet
 	PortUnavailable   Code = "port"               // the port is taken or needs permission
 	CertificateFailed Code = "certificate"        // no trusted certificate
+	PlanChanged       Code = "plan_changed"       // the machine changed since the plan was made
 	Failed            Code = "failed"             // anything else
 )
 

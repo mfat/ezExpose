@@ -329,3 +329,64 @@ func TestLANOnTheTailscaleAddress(t *testing.T) {
 		t.Errorf("an address that isn't this machine's: %v", err)
 	}
 }
+
+func TestAnApprovedPlanIsAppliedAsShown(t *testing.T) {
+	w := newWorld(t)
+	m := w.manager()
+	p, err := m.Plan(ctx, private)
+	if err != nil || p.Exposure.Port != 443 {
+		t.Fatalf("%+v, %v", p, err)
+	}
+	e, err := m.ApplyPlan(ctx, p, false)
+	if err != nil || e.Port != 443 || w.ts.routes[443] == "" {
+		t.Fatalf("%+v, %v", e, err)
+	}
+}
+
+func TestAStalePlanChangesNothing(t *testing.T) {
+	w := newWorld(t)
+	m := w.manager()
+	p, _ := m.Plan(ctx, private)
+	w.ts.routes[443] = "http://127.0.0.1:3000" // someone took the port in between
+	if _, err := m.ApplyPlan(ctx, p, false); CodeOf(err) != PlanChanged || !strings.Contains(err.Error(), ":8443") {
+		t.Fatalf("%v", err)
+	}
+	if len(w.ts.routes) != 1 {
+		t.Fatalf("changed something: %v", w.ts.routes)
+	}
+}
+
+func TestAPublicPlanStillNeedsConfirming(t *testing.T) {
+	w := newWorld(t)
+	w.net.dns["app.example.com"] = []string{"203.0.113.7"}
+	m := w.manager()
+	p, err := m.Plan(ctx, public)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.ApplyPlan(ctx, p, false); CodeOf(err) != NeedsConfirmation {
+		t.Fatalf("%v", err)
+	}
+	if e, err := m.ApplyPlan(ctx, p, true); err != nil || e.Status != state.Active {
+		t.Fatalf("%+v, %v", e, err)
+	}
+	// Now it exists, the same plan is stale: applying would repair, not create.
+	if _, err := m.ApplyPlan(ctx, p, true); CodeOf(err) != PlanChanged {
+		t.Fatalf("%v", err)
+	}
+}
+
+func TestAFailureThatChangedNothingLeavesNoRecord(t *testing.T) {
+	w := newWorld(t)
+	m := w.manager()
+	if _, err := m.Apply(ctx, Request{Backend: "127.0.0.1:1234", Access: state.Private}); CodeOf(err) != BackendDown {
+		t.Fatal(err)
+	}
+	if list, _ := m.List(); len(list) != 0 {
+		t.Fatalf("left a record: %+v", list)
+	}
+	p, err := m.Plan(ctx, Request{Backend: "127.0.0.1:1234", Access: state.Private})
+	if err != nil || p.Existing || p.Exposure.Host != box {
+		t.Fatalf("%+v, %v", p, err)
+	}
+}

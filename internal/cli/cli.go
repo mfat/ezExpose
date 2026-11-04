@@ -11,6 +11,8 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -24,6 +26,10 @@ import (
 
 // Schema is the version of the JSON output. Fields may be added within a
 // version; anything else changing means a new one.
+//
+// With --json, stdout carries one JSON object per line. Commands that take a while
+// send {"event":"progress","message":...} lines first; the last line is always
+// {"event":"result","ok":...}, with "error":{"code","message"} when ok is false.
 const Schema = 1
 
 // App is one run of the command.
@@ -43,6 +49,8 @@ type App struct {
 	Logs func(ctx context.Context, lines int) error
 	// Tailscale returns the installed Tailscale's version.
 	Tailscale func(ctx context.Context) (string, error)
+	// Progress receives progress from everything that reports it.
+	Progress *Progress
 
 	json bool
 }
@@ -93,6 +101,13 @@ func (a *App) Run(ctx context.Context, args []string) int {
 		"version":          a.version,
 	}
 	cmd, ok := commands[args[0]]
+	if a.Progress != nil {
+		if slices.Contains(args, "--json") || slices.Contains(args, "-json") {
+			a.Progress.set(&events{out: a.Out})
+		} else {
+			a.Progress.set(a.Err)
+		}
+	}
 	if !ok {
 		fmt.Fprintf(a.Err, "ezexpose: unknown command %q. See: ezexpose help\n", args[0])
 		return 2
@@ -131,10 +146,8 @@ func parse(fs *flag.FlagSet, args []string) error {
 
 // emit writes the JSON envelope.
 func (a *App) emit(payload map[string]any, ok bool) {
-	payload["schema"], payload["ok"] = Schema, ok
-	enc := json.NewEncoder(a.Out)
-	enc.SetIndent("", "  ")
-	_ = enc.Encode(payload)
+	payload["schema"], payload["ok"], payload["event"] = Schema, ok, "result"
+	_ = json.NewEncoder(a.Out).Encode(payload)
 }
 
 func (a *App) confirm(question string, yes bool) (bool, error) {
@@ -171,9 +184,16 @@ func requestFlags(fs *flag.FlagSet) *manager.Request {
 	return r
 }
 
+// planFile is what plan --out saves and apply --plan-file reads.
+type planFile struct {
+	Schema int          `json:"schema"`
+	Plan   manager.Plan `json:"plan"`
+}
+
 func (a *App) plan(ctx context.Context, args []string) error {
 	fs := a.flags("plan")
 	r := requestFlags(fs)
+	out := fs.String("out", "", "save the plan to this file, for apply --plan-file")
 	if err := parse(fs, args); err != nil {
 		return err
 	}
@@ -181,12 +201,40 @@ func (a *App) plan(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	if *out != "" {
+		raw, err := json.MarshalIndent(planFile{Schema: Schema, Plan: p}, "", "  ")
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(*out, append(raw, '\n'), 0o600); err != nil {
+			return err
+		}
+	}
 	if a.json {
 		a.emit(map[string]any{"plan": p}, true)
 		return nil
 	}
 	a.showPlan(p)
+	if *out != "" {
+		fmt.Fprintf(a.Out, "Saved. Apply exactly this with: ezexpose apply --plan-file %s\n", *out)
+	}
 	return nil
+}
+
+func readPlan(path string) (manager.Plan, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return manager.Plan{}, err
+	}
+	var f planFile
+	if err := json.Unmarshal(raw, &f); err != nil {
+		return manager.Plan{}, &manager.Error{Code: manager.Invalid, Err: fmt.Errorf("%s isn't a plan: %v", path, err)}
+	}
+	if f.Schema != Schema {
+		return manager.Plan{}, &manager.Error{Code: manager.Invalid,
+			Err: fmt.Errorf("%s was made by a different ezExpose (schema %d). Make a new plan", path, f.Schema)}
+	}
+	return f.Plan, nil
 }
 
 func (a *App) showPlan(p manager.Plan) {
@@ -211,11 +259,21 @@ func (a *App) apply(ctx context.Context, args []string) error {
 	fs := a.flags("apply")
 	r := requestFlags(fs)
 	yes := fs.Bool("yes", false, "don't ask; for public access, confirm the app has its own login")
+	planPath := fs.String("plan-file", "", "apply a plan saved by plan --out, only if it still holds")
 	if err := parse(fs, args); err != nil {
 		return err
 	}
-	p, err := a.Manager.Plan(ctx, *r)
-	if err != nil {
+	var p manager.Plan
+	var err error
+	if *planPath != "" {
+		if *r != (manager.Request{}) {
+			return usageError{errors.New("--plan-file takes no other settings: they're in the plan")}
+		}
+		if p, err = readPlan(*planPath); err != nil {
+			return err
+		}
+		*r = p.Request
+	} else if p, err = a.Manager.Plan(ctx, *r); err != nil {
 		return err
 	}
 	if !*yes {
@@ -237,7 +295,12 @@ func (a *App) apply(ctx context.Context, args []string) error {
 		}
 	}
 	r.Confirmed = true
-	e, err := a.Manager.Apply(ctx, *r)
+	var e state.Exposure
+	if *planPath != "" {
+		e, err = a.Manager.ApplyPlan(ctx, p, true)
+	} else {
+		e, err = a.Manager.Apply(ctx, *r)
+	}
 	if err != nil {
 		return err
 	}

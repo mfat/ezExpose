@@ -37,7 +37,8 @@ func main() {
 		fmt.Fprintln(os.Stderr, "✗", err)
 		os.Exit(1)
 	}
-	sys := system.NewSystemd(os.Stderr)
+	progress := cli.NewProgress(os.Stderr)
+	sys := system.NewSystemd(progress)
 	ts := tailscale.New()
 	report := func(name string) func(int64) {
 		const step = 5 << 20
@@ -45,7 +46,7 @@ func main() {
 		return func(received int64) {
 			if received/step > shown {
 				shown = received / step
-				fmt.Fprintf(os.Stderr, "  %s: %d MB\n", name, received>>20)
+				fmt.Fprintf(progress, "  %s: %d MB\n", name, received>>20)
 			}
 		}
 	}
@@ -58,7 +59,7 @@ func main() {
 		Certs:   system.Certs{Dir: dir, Report: report("lego")},
 		Renewal: system.Renewal{Dir: dir, Self: self, Systemd: sys},
 		Net:     system.Net{},
-		Log:     os.Stderr,
+		Log:     progress,
 		Wait:    10 * time.Second,
 	}
 	args := os.Args[1:]
@@ -76,6 +77,7 @@ func main() {
 			return strings.TrimSpace(string(raw)), err
 		},
 		Tailscale: ts.Version,
+		Progress:  progress,
 		Logs: func(ctx context.Context, lines int) error {
 			cmd := caddy.Logs(ctx, lines)
 			cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr

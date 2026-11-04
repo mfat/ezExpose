@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -95,23 +96,25 @@ type Manager struct {
 
 // Request says what to expose and how.
 type Request struct {
-	Backend string       // such as 127.0.0.1:8080
-	Access  state.Access // private, public or lan
-	Host    string       // your name, for public and lan
-	Port    int          // 0 picks one
-	Name    string
+	Backend string       `json:"backend"` // such as 127.0.0.1:8080
+	Access  state.Access `json:"access"`  // private, public or lan
+	Host    string       `json:"host,omitempty"`
+	Port    int          `json:"port,omitempty"` // 0 picks one
+	Name    string       `json:"name,omitempty"`
 	// Cloudflare lets ezExpose create the public DNS record. LAN access always
 	// uses it.
-	Cloudflare bool
+	Cloudflare bool `json:"cloudflare,omitempty"`
 	// Address is where a LAN name points, such as this machine's Tailscale
 	// address. Left out, it's the address the machine uses on its network.
-	Address string
+	Address string `json:"address,omitempty"`
 	// Confirmed says the person knows HTTPS isn't a login: public access needs it.
-	Confirmed bool
+	// It's never saved in a plan file: whoever applies the plan confirms again.
+	Confirmed bool `json:"-"`
 }
 
 // Plan is what Apply would do, worked out without changing anything.
 type Plan struct {
+	Request  Request        `json:"request"`
 	Exposure state.Exposure `json:"exposure"`
 	Steps    []string       `json:"steps"`
 	// Existing is true when this app is already exposed this way, so applying
@@ -219,8 +222,8 @@ func (m *Manager) Plan(ctx context.Context, r Request) (Plan, error) {
 	if err != nil {
 		return Plan{}, wrap(BadRecord, err)
 	}
-	if e := find(&st, r); e != nil {
-		return Plan{Exposure: *e, Existing: true, Steps: []string{"Check " + e.URL() + " and repair anything missing"}}, nil
+	if e := find(&st, r); e != nil && len(e.Resources) > 0 {
+		return Plan{Request: r, Exposure: planned(*e), Existing: true, Steps: []string{"Check " + e.URL() + " and repair anything missing"}}, nil
 	}
 	e := state.Exposure{Backend: r.Backend, Access: r.Access, Host: r.Host, Port: r.Port, Name: r.Name}
 	steps := []string{"Check that " + r.Backend + " answers"}
@@ -258,7 +261,40 @@ func (m *Manager) Plan(ctx context.Context, r Request) (Plan, error) {
 			"Serve "+e.URL()+" on your network through Caddy",
 			"Renew the certificate on a timer")
 	}
-	return Plan{Exposure: e, Steps: steps}, nil
+	return Plan{Request: r, Exposure: e, Steps: steps}, nil
+}
+
+// planned keeps only what a plan promises: where, how and what. Status and
+// check times change on their own and don't make a plan stale.
+func planned(e state.Exposure) state.Exposure {
+	return state.Exposure{ID: e.ID, Name: e.Name, Backend: e.Backend, Access: e.Access, Host: e.Host,
+		Port: e.Port, Cloudflare: e.Cloudflare, Address: e.Address}
+}
+
+// ApplyPlan applies a plan made earlier, such as one a person approved in an
+// app. If working it out again now gives anything different, nothing is changed:
+// approving one thing and getting another isn't allowed.
+func (m *Manager) ApplyPlan(ctx context.Context, p Plan, confirmed bool) (state.Exposure, error) {
+	now, err := m.Plan(ctx, p.Request)
+	if err != nil {
+		return state.Exposure{}, err
+	}
+	if !samePlan(now, p) {
+		return state.Exposure{}, errorf(PlanChanged, "this machine changed since the plan was made, so nothing was "+
+			"changed. Make a new plan: it would now %s", strings.Join(now.Steps, "; "))
+	}
+	r := p.Request
+	r.Confirmed = confirmed
+	if r.Access == state.Private && r.Port == 0 {
+		r.Port = p.Exposure.Port // the port the plan showed, not whichever is free later
+	}
+	return m.Apply(ctx, r)
+}
+
+func samePlan(a, b Plan) bool {
+	pa, pb := planned(a.Exposure), planned(b.Exposure)
+	return a.Request == b.Request && reflect.DeepEqual(pa, pb) &&
+		a.Existing == b.Existing && slices.Equal(a.Steps, b.Steps)
 }
 
 // pickPort chooses a free tailnet port. A port that already forwards somewhere,
@@ -343,6 +379,12 @@ func (m *Manager) Apply(ctx context.Context, r Request) (state.Exposure, error) 
 		e = st.Find(e.ID)
 		if err != nil {
 			e.Status, e.Error = state.Failed, err.Error()
+			if len(e.Resources) == 0 {
+				// Nothing was set up, so there's nothing to recover or remove.
+				result = *e
+				st.Delete(e.ID)
+				return errors.Join(err, m.save(st))
+			}
 			if saveErr := m.save(st); saveErr != nil {
 				return errors.Join(err, saveErr)
 			}

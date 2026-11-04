@@ -5,7 +5,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -28,13 +31,15 @@ func app(t *testing.T, input string) (*App, *bytes.Buffer, *bytes.Buffer) {
 	}, &out, &errs
 }
 
+// envelope returns the result: the last line.
 func envelope(t *testing.T, raw []byte) map[string]any {
 	t.Helper()
+	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
 	var got map[string]any
-	if err := json.Unmarshal(raw, &got); err != nil {
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &got); err != nil {
 		t.Fatalf("not JSON: %v\n%s", err, raw)
 	}
-	if got["schema"] != float64(Schema) {
+	if got["schema"] != float64(Schema) || got["event"] != "result" {
 		t.Fatalf("no schema: %s", raw)
 	}
 	return got
@@ -131,5 +136,59 @@ func TestVersionTellsAnAppWhatItCanDo(t *testing.T) {
 	ts := got["tailscale"].(map[string]any)
 	if got["version"] != "test" || ts["ok"] != false || ts["installed"] != "1.50.0" || len(got["commands"].([]any)) == 0 {
 		t.Fatalf("%s", out)
+	}
+}
+
+// deadNet is a network where nothing answers.
+type deadNet struct{ manager.Net }
+
+func (deadNet) Dial(context.Context, string) error { return errors.New("connection refused") }
+
+func TestProgressBecomesEventsWithJSON(t *testing.T) {
+	a, out, errs := app(t, "")
+	a.Progress = NewProgress(a.Err)
+	a.Manager.Log, a.Manager.Net = a.Progress, deadNet{}
+	a.Run(context.Background(), []string{"apply", "--json", "--backend", "127.0.0.1:1", "--access", "lan", "--host", "a.example.com", "--yes"})
+	fmt.Fprintln(a.Progress, "a step")
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	var last map[string]any
+	_ = json.Unmarshal([]byte(lines[len(lines)-1]), &last)
+	if last["event"] != "progress" || last["message"] != "a step" || errs.Len() != 0 {
+		t.Fatalf("stdout %q, stderr %q", out, errs)
+	}
+	for _, line := range lines {
+		if !json.Valid([]byte(line)) {
+			t.Fatalf("not one JSON object per line: %q", line)
+		}
+	}
+	b, _, errs2 := app(t, "")
+	b.Progress = NewProgress(b.Err)
+	b.Run(context.Background(), []string{"status"})
+	fmt.Fprintln(b.Progress, "for people")
+	if !strings.Contains(errs2.String(), "for people") {
+		t.Fatalf("without --json, progress goes to stderr: %q", errs2)
+	}
+}
+
+func TestPlanFileRoundTrip(t *testing.T) {
+	a, out, _ := app(t, "")
+	path := filepath.Join(t.TempDir(), "plan.json")
+	if code := a.Run(context.Background(), []string{"plan", "--backend", "127.0.0.1:1", "--access", "lan", "--host", "a.example.com", "--out", path}); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	if !strings.Contains(out.String(), "--plan-file") {
+		t.Fatalf("%s", out)
+	}
+	p, err := readPlan(path)
+	if err != nil || p.Request.Host != "a.example.com" || p.Exposure.Port != 8443 {
+		t.Fatalf("%+v, %v", p, err)
+	}
+	b, _, _ := app(t, "")
+	if code := b.Run(context.Background(), []string{"apply", "--plan-file", path, "--host", "b.example.com"}); code != 2 {
+		t.Fatalf("settings beside a plan file: exit %d", code)
+	}
+	_ = os.WriteFile(path, []byte(`{"schema":99,"plan":{}}`), 0o600)
+	if _, err := readPlan(path); err == nil {
+		t.Fatal("a plan from another schema was read")
 	}
 }
