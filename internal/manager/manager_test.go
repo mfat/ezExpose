@@ -484,3 +484,36 @@ func TestADefiniteConflictKeepsTrackOfOurOldRecord(t *testing.T) {
 		t.Fatalf("lost track of %s's old record: %+v", e.ID, list[0].Resources)
 	}
 }
+
+func TestOneNameServesOneApp(t *testing.T) {
+	w := newWorld(t)
+	w.net.dns["home.example.com"] = []string{"203.0.113.7"}
+	m := w.manager()
+	first, err := m.Apply(ctx, lan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certs, sites := w.certs.certs["home.example.com"], len(w.proxy.sites)
+	for name, r := range map[string]Request{
+		"lan, another app and port": {Backend: "127.0.0.1:9090", Access: state.LAN, Host: "home.example.com", Port: 8444},
+		"public, same name":         {Backend: "127.0.0.1:9090", Access: state.Public, Host: "home.example.com", Cloudflare: true, Confirmed: true},
+		"public, same app and name": {Backend: "127.0.0.1:8080", Access: state.Public, Host: "home.example.com", Confirmed: true},
+	} {
+		if _, err := m.Plan(ctx, r); CodeOf(err) != Invalid || !strings.Contains(err.Error(), first.ID) {
+			t.Errorf("%s: plan: %v", name, err)
+		}
+		if _, err := m.Apply(ctx, r); CodeOf(err) != Invalid {
+			t.Errorf("%s: apply: %v", name, err)
+		}
+	}
+	if w.certs.certs["home.example.com"] != certs || len(w.proxy.sites) != sites || len(w.dns.records) != 1 {
+		t.Fatal("a refused request changed something")
+	}
+	if list, _ := m.List(); len(list) != 1 {
+		t.Fatalf("recorded a refused request: %+v", list)
+	}
+	// The same app again is a repair, not a second user of the name.
+	if e, err := m.Apply(ctx, lan); err != nil || e.ID != first.ID {
+		t.Fatalf("%+v, %v", e, err)
+	}
+}

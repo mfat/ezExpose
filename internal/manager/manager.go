@@ -223,8 +223,12 @@ func (m *Manager) Plan(ctx context.Context, r Request) (Plan, error) {
 	if err != nil {
 		return Plan{}, wrap(BadRecord, err)
 	}
-	if e := find(&st, r); e != nil && len(e.Resources) > 0 {
-		return Plan{Request: r, Exposure: planned(*e), Existing: true, Steps: []string{"Check " + e.URL() + " and repair anything missing"}}, nil
+	found := find(&st, r)
+	if found != nil && len(found.Resources) > 0 {
+		return Plan{Request: r, Exposure: planned(*found), Existing: true, Steps: []string{"Check " + found.URL() + " and repair anything missing"}}, nil
+	}
+	if err := nameFree(&st, r, found); err != nil {
+		return Plan{}, err
 	}
 	e := state.Exposure{Backend: r.Backend, Access: r.Access, Host: r.Host, Port: r.Port, Name: r.Name}
 	steps := []string{"Check that " + r.Backend + " answers"}
@@ -298,6 +302,22 @@ func samePlan(a, b Plan) bool {
 		a.Existing == b.Existing && slices.Equal(a.Steps, b.Steps)
 }
 
+// nameFree refuses a public or LAN name another exposure already has. Its DNS
+// record and certificate belong to that exposure, and removing it would take them
+// away from this one.
+func nameFree(st *state.State, r Request, self *state.Exposure) error {
+	if r.Access == state.Private {
+		return nil
+	}
+	for _, other := range st.Exposures {
+		if (self == nil || other.ID != self.ID) && other.Access != state.Private && other.Host == r.Host {
+			return errorf(Invalid, "%s is already used by %s (%s, %s). One name serves one app: "+
+				"remove that one first, or use another name", r.Host, other.ID, other.Access, other.Backend)
+		}
+	}
+	return nil
+}
+
 // pickPort chooses a free tailnet port. A port that already forwards somewhere,
 // even to this same app, belongs to whoever set it up.
 func (m *Manager) pickPort(ctx context.Context, st *state.State, self, host string, want int) (int, error) {
@@ -345,6 +365,9 @@ func (m *Manager) Apply(ctx context.Context, r Request) (state.Exposure, error) 
 	var result state.Exposure
 	err := m.locked(func(st *state.State) error {
 		e := find(st, r)
+		if err := nameFree(st, r, e); err != nil {
+			return err
+		}
 		if e == nil {
 			id, err := state.NewID("exp_", 4)
 			if err != nil {
