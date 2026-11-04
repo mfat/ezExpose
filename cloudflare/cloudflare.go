@@ -87,49 +87,59 @@ type record struct {
 	Comment string `json:"comment"`
 }
 
-func (c Client) call(ctx context.Context, method, path string, body, into any) error {
+type reply struct {
+	Success bool            `json:"success"`
+	Result  json.RawMessage `json:"result"`
+	Errors  []struct {
+		Message string `json:"message"`
+	} `json:"errors"`
+	Info struct {
+		TotalPages int `json:"total_pages"`
+	} `json:"result_info"`
+}
+
+func (c Client) do(ctx context.Context, method, path string, body any) (reply, error) {
 	var payload io.Reader
 	if body != nil {
 		raw, err := json.Marshal(body)
 		if err != nil {
-			return err
+			return reply{}, err
 		}
 		payload = bytes.NewReader(raw)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, c.base+path, payload)
 	if err != nil {
-		return err
+		return reply{}, err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return err
+		return reply{}, err
 	}
 	defer resp.Body.Close()
-	var reply struct {
-		Success bool            `json:"success"`
-		Result  json.RawMessage `json:"result"`
-		Errors  []struct {
-			Message string `json:"message"`
-		} `json:"errors"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&reply); err != nil {
-		return fmt.Errorf("cloudflare answered %s", resp.Status)
+	var r reply
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		return reply{}, fmt.Errorf("cloudflare answered %s", resp.Status)
 	}
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return errors.New("Cloudflare refused that token. It needs Zone:Read and DNS:Edit for this domain")
+		return reply{}, errors.New("Cloudflare refused that token. It needs Zone:Read and DNS:Edit for this domain")
 	}
-	if !reply.Success {
-		if len(reply.Errors) > 0 {
-			return fmt.Errorf("cloudflare: %s", reply.Errors[0].Message)
+	if !r.Success {
+		if len(r.Errors) > 0 {
+			return reply{}, fmt.Errorf("cloudflare: %s", r.Errors[0].Message)
 		}
-		return fmt.Errorf("cloudflare answered %s", resp.Status)
+		return reply{}, fmt.Errorf("cloudflare answered %s", resp.Status)
 	}
-	if into == nil {
-		return nil
+	return r, nil
+}
+
+func (c Client) call(ctx context.Context, method, path string, body, into any) error {
+	r, err := c.do(ctx, method, path, body)
+	if err != nil || into == nil {
+		return err
 	}
-	return json.Unmarshal(reply.Result, into)
+	return json.Unmarshal(r.Result, into)
 }
 
 // Zone finds the zone holding host, trying each parent name in turn.
@@ -150,12 +160,27 @@ func (c Client) Zone(ctx context.Context, host string) (string, error) {
 	return "", fmt.Errorf("this token can't see a Cloudflare domain containing %s", host)
 }
 
-// records returns host's address records, A and AAAA.
+// ErrNotOurs means a record ezExpose didn't create is in the way. Nothing was
+// changed when it's returned.
+var ErrNotOurs = errors.New("so it was left alone")
+
+// records returns host's address records, A and AAAA, from every page.
 func (c Client) records(ctx context.Context, zone, host string) ([]record, error) {
-	q := url.Values{"name.exact": {host}, "per_page": {"100"}}
 	var all, found []record
-	if err := c.call(ctx, http.MethodGet, "/zones/"+zone+"/dns_records?"+q.Encode(), nil, &all); err != nil {
-		return nil, err
+	for page := 1; ; page++ {
+		q := url.Values{"name.exact": {host}, "per_page": {"100"}, "page": {fmt.Sprint(page)}}
+		r, err := c.do(ctx, http.MethodGet, "/zones/"+zone+"/dns_records?"+q.Encode(), nil)
+		if err != nil {
+			return nil, err
+		}
+		var batch []record
+		if err := json.Unmarshal(r.Result, &batch); err != nil {
+			return nil, err
+		}
+		all = append(all, batch...)
+		if page >= r.Info.TotalPages {
+			break
+		}
 	}
 	for _, r := range all {
 		if !strings.EqualFold(r.Name, host) {
@@ -165,7 +190,7 @@ func (c Client) records(ctx context.Context, zone, host string) ([]record, error
 		case "A", "AAAA":
 			found = append(found, r)
 		case "CNAME":
-			return nil, fmt.Errorf("%s is an alias (CNAME) for %s, so it was left alone. Remove the alias first", host, r.Content)
+			return nil, fmt.Errorf("%s is an alias (CNAME) for %s. Remove the alias first, %w", host, r.Content, ErrNotOurs)
 		}
 	}
 	return found, nil
@@ -200,27 +225,38 @@ func (c Client) Point(ctx context.Context, zone, host, ip string) (owned bool, e
 	}
 	want := record{Type: kind, Name: host, Content: ip, TTL: ttl, Comment: c.comment()}
 	path := "/zones/" + zone + "/dns_records"
-	// The machine moved between IPv4 and IPv6: this install's old record goes.
+	// Decide before changing anything, so a conflict leaves every record as it was.
+	found := ofType(all, kind)
+	var change func() error
+	switch {
+	case len(found) == 0:
+		owned, change = true, func() error { return c.call(ctx, http.MethodPost, path, want, nil) }
+	case len(found) == 1 && c.ours(found[0]):
+		owned = true
+		if found[0].Content != ip {
+			id := found[0].ID
+			change = func() error { return c.call(ctx, http.MethodPatch, path+"/"+id, want, nil) }
+		}
+	case len(found) == 1 && found[0].Content == ip:
+		owned = false
+	default:
+		return false, fmt.Errorf("%s already has a DNS record that ezExpose didn't create, %w", host, ErrNotOurs)
+	}
+	if change != nil {
+		if err := change(); err != nil {
+			return false, err
+		}
+	}
+	// The machine moved between IPv4 and IPv6. The new record is in place, so this
+	// install's old one can go.
 	for _, r := range all {
 		if r.Type != kind && c.ours(r) {
 			if err := c.call(ctx, http.MethodDelete, path+"/"+r.ID, nil, nil); err != nil {
-				return false, err
+				return owned, err
 			}
 		}
 	}
-	found := ofType(all, kind)
-	switch {
-	case len(found) == 0:
-		return true, c.call(ctx, http.MethodPost, path, want, nil)
-	case len(found) == 1 && c.ours(found[0]):
-		if found[0].Content == ip {
-			return true, nil
-		}
-		return true, c.call(ctx, http.MethodPatch, path+"/"+found[0].ID, want, nil)
-	case len(found) == 1 && found[0].Content == ip:
-		return false, nil
-	}
-	return false, fmt.Errorf("%s already has a DNS record that ezExpose didn't create, so it was left alone", host)
+	return owned, nil
 }
 
 // Pointing returns where this install's record for host points, or "" if it

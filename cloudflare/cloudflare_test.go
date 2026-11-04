@@ -3,6 +3,7 @@ package cloudflare
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,9 +12,10 @@ import (
 
 // fakeAPI is a small Cloudflare holding example.com.
 type fakeAPI struct {
-	records []record
-	writes  []string
-	auth    string
+	failWrites bool
+	records    []record
+	writes     []string
+	auth       string
 }
 
 func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -30,6 +32,9 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		reply([]any{})
 	case r.Method == http.MethodGet:
 		reply(f.records)
+	case f.failWrites:
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": false, "errors": []map[string]string{{"message": "timeout"}}})
 	default:
 		var body record
 		_ = json.NewDecoder(r.Body).Decode(&body)
@@ -180,7 +185,7 @@ func TestMovingToIPv6ReplacesOurOldRecord(t *testing.T) {
 	if _, err := client(t, f).Point(context.Background(), "zone1", host, "2001:db8::7"); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(f.writes, ",") != "DELETE ,POST 2001:db8::7" || len(f.records) != 1 || f.records[0].Type != "AAAA" {
+	if strings.Join(f.writes, ",") != "POST 2001:db8::7,DELETE " {
 		t.Fatalf("writes %v, records %+v", f.writes, f.records)
 	}
 }
@@ -193,5 +198,40 @@ func TestAnAliasIsLeftAlone(t *testing.T) {
 	}
 	if _, err := client(t, f).Point(context.Background(), "zone1", host, "not an ip"); err == nil {
 		t.Fatal("pointed at nonsense")
+	}
+}
+
+func TestAConflictLeavesTheOldRecordInPlace(t *testing.T) {
+	ours := record{ID: "r", Type: "A", Name: host, Content: "203.0.113.7", Comment: marker + owner}
+	theirs := record{ID: "s", Type: "AAAA", Name: host, Content: "2001:db8::99"}
+	f := &fakeAPI{records: []record{ours, theirs}}
+	_, err := client(t, f).Point(context.Background(), "zone1", host, "2001:db8::7")
+	if !errors.Is(err, ErrNotOurs) || len(f.writes) != 0 {
+		t.Fatalf("%v, writes %v", err, f.writes)
+	}
+}
+
+func TestAFailedCreateLeavesTheOldRecordInPlace(t *testing.T) {
+	f := &fakeAPI{records: []record{{ID: "r", Type: "A", Name: host, Content: "203.0.113.7", Comment: marker + owner}}, failWrites: true}
+	if _, err := client(t, f).Point(context.Background(), "zone1", host, "2001:db8::7"); err == nil {
+		t.Fatal("expected an error")
+	}
+	if len(f.records) != 1 || f.records[0].Type != "A" {
+		t.Fatalf("lost the old record: %+v", f.records)
+	}
+}
+
+func TestEveryPageIsRead(t *testing.T) {
+	theirs := record{ID: "s", Type: "A", Name: host, Content: "198.51.100.20"}
+	c := client(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		result := []record{}
+		if r.URL.Query().Get("page") == "2" {
+			result = []record{theirs}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "result": result,
+			"result_info": map[string]int{"total_pages": 2}})
+	}))
+	if _, err := c.Point(context.Background(), "zone1", host, "203.0.113.7"); !errors.Is(err, ErrNotOurs) {
+		t.Fatalf("missed a record on the second page: %v", err)
 	}
 }
