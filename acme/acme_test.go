@@ -46,14 +46,21 @@ func TestTheTokenFileMustBeOwnerOnly(t *testing.T) {
 		t.Fatal("went on to fetch lego")
 	}
 	for _, bad := range []string{filepath.Join(dir, "missing"), dir} {
-		if err := ownerOnly(bad); err == nil {
+		if err := OwnerOnly(bad); err == nil {
 			t.Errorf("%s was accepted", bad)
 		}
 	}
 	if err := os.Chmod(token, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := ownerOnly(token); err != nil {
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(token, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := OwnerOnly(link); err == nil {
+		t.Error("a link was accepted")
+	}
+	if err := OwnerOnly(token); err != nil {
 		t.Fatal(err)
 	}
 }

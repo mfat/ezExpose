@@ -78,4 +78,8 @@ func TestATokenWithSpacesIsRefused(t *testing.T) {
 	if _, err := DNS(dir)("0123456789abcdef"); err != nil {
 		t.Fatal(err)
 	}
+	_ = os.Chmod(TokenFile(dir), 0o644)
+	if _, err := DNS(dir)("0123456789abcdef"); err == nil || !strings.Contains(err.Error(), "chmod 600") {
+		t.Fatalf("a token others can read was used: %v", err)
+	}
 }

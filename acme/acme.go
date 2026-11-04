@@ -47,7 +47,7 @@ func (i Issuer) Args(host string) []string {
 // never shows up in a process list. lego 5's run does both: with a certificate
 // already there, it only renews when about a third of its lifetime is left.
 func (i Issuer) Issue(ctx context.Context, host string) error {
-	if err := ownerOnly(i.TokenFile); err != nil {
+	if err := OwnerOnly(i.TokenFile); err != nil {
 		return err
 	}
 	lego, err := fetch.Install(ctx, i.Tools, fetch.Lego, i.Report)
@@ -70,14 +70,15 @@ func lastLines(out []byte, n int) string {
 	return strings.Join(lines, "\n")
 }
 
-// ownerOnly refuses a token file that other users could read or change.
-func ownerOnly(path string) error {
-	info, err := os.Stat(path)
+// OwnerOnly refuses a token file that other users could read or change, or a
+// link that could lead anywhere.
+func OwnerOnly(path string) error {
+	info, err := os.Lstat(path)
 	if err != nil {
 		return fmt.Errorf("the Cloudflare token file: %w", err)
 	}
 	if !info.Mode().IsRegular() {
-		return fmt.Errorf("the Cloudflare token file %s isn't a file", path)
+		return fmt.Errorf("the Cloudflare token file %s isn't a plain file", path)
 	}
 	if info.Mode().Perm()&0o077 != 0 {
 		return fmt.Errorf("other users can read the Cloudflare token in %s. Run: chmod 600 %s", path, path)

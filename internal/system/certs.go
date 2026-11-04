@@ -41,11 +41,15 @@ func SaveToken(dir, token string) error {
 // DNS returns the manager's Cloudflare client for an install.
 func DNS(dir string) func(install string) (manager.DNS, error) {
 	return func(install string) (manager.DNS, error) {
-		raw, err := os.ReadFile(TokenFile(dir))
+		_, err := os.Lstat(TokenFile(dir))
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, fmt.Errorf("no Cloudflare token yet. To make one:\n%s\nThen save it with: ezexpose cloudflare-token",
 				cloudflare.TokenSteps)
 		}
+		if err := acme.OwnerOnly(TokenFile(dir)); err != nil {
+			return nil, err
+		}
+		raw, err := os.ReadFile(TokenFile(dir))
 		if err != nil {
 			return nil, err
 		}
