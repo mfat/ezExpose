@@ -10,6 +10,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -68,8 +69,8 @@ func TestATokenWithSpacesIsRefused(t *testing.T) {
 			t.Errorf("%q was saved", bad)
 		}
 	}
-	if _, err := DNS(dir)("0123456789abcdef"); err == nil {
-		t.Fatal("a client without a token")
+	if _, err := DNS(dir)("0123456789abcdef"); err == nil || !strings.Contains(err.Error(), "Edit zone DNS") {
+		t.Fatalf("a client without a token, or no steps: %v", err)
 	}
 	if err := SaveToken(dir, "tok123\n"); err != nil {
 		t.Fatal(err)

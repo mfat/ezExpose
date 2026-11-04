@@ -27,11 +27,20 @@ const (
 	ttl    = 60
 )
 
-// TokenURL opens Cloudflare's token page with the permissions filled in.
+// TokenURL opens Cloudflare's token page and tries to fill in the permissions.
+// Cloudflare doesn't always keep them, so show TokenSteps too.
 const TokenURL = "https://dash.cloudflare.com/profile/api-tokens?" +
 	"permissionGroupKeys=%5B%7B%22key%22%3A%22zone%22%2C%22type%22%3A%22read%22%7D%2C" +
 	"%7B%22key%22%3A%22dns%22%2C%22type%22%3A%22edit%22%7D%5D" +
 	"&accountId=%2A&zoneId=all&name=ezExpose"
+
+// TokenSteps says how to make a token by hand, for when TokenURL opens on the
+// list of templates instead.
+const TokenSteps = `1. Open https://dash.cloudflare.com/profile/api-tokens and click Create Token.
+2. Next to "Edit zone DNS", click Use template.
+3. Under Permissions, click Add more and choose Zone, Zone, Read.
+4. Under Zone Resources, choose Include, Specific zone, and your domain.
+5. Click Continue to summary, then Create Token, and copy it.`
 
 // Client talks to the Cloudflare API with one token, for one install.
 type Client struct {

@@ -26,6 +26,12 @@ var notRoutable = []net.IPNet{
 	{IP: net.IPv4(240, 0, 0, 0), Mask: net.CIDRMask(4, 32)},
 }
 
+// IsTailnet reports whether ip is in the range Tailscale gives its devices.
+func IsTailnet(ip string) bool {
+	addr := net.ParseIP(ip)
+	return addr != nil && notRoutable[1].Contains(addr)
+}
+
 // IsPublic reports whether ip is the kind of address the internet routes. It says
 // nothing about whether anything can actually reach it: firewalls and missing
 // port forwarding still get in the way, and only an outside check proves that. A

@@ -17,6 +17,7 @@ import (
 	"github.com/mfat/ezExpose/internal/manager"
 	"github.com/mfat/ezExpose/internal/state"
 	"github.com/mfat/ezExpose/internal/system"
+	"github.com/mfat/ezExpose/netcheck"
 )
 
 // Schema is the version of the JSON output. Fields may be added within a
@@ -251,7 +252,13 @@ func (a *App) apply(ctx context.Context, args []string) error {
 	case state.Public:
 		fmt.Fprintln(a.Out, "  Anyone on the internet can open it. The certificate renews by itself.")
 	case state.LAN:
-		fmt.Fprintln(a.Out, "  It works on your home network. The certificate renews twice a day when due.")
+		where := "devices on your home network"
+		if netcheck.IsTailnet(e.Address) {
+			where = "your own devices on Tailscale"
+		}
+		fmt.Fprintf(a.Out, "  Only %s can open it. The certificate renews twice a day when due.\n", where)
+		fmt.Fprintln(a.Out, "  If a device can't find the name, its router may block names pointing to private\n"+
+			"  addresses. OpenWrt calls this rebind protection, and it needs an exception for your domain.")
 	}
 	return nil
 }

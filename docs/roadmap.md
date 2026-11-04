@@ -42,21 +42,32 @@ apply and remove killed at six points each always recovered. Tailscale's setting
 byte-for-byte as they began. The server wasn't clean: it already ran ezVaultwarden, which
 made a good test of leaving other routes alone.
 
-## 4. Public access and renewal (mostly done)
+## 4. Public access and renewal (done)
 
 Caddy on port 443, Cloudflare DNS and certificates, with renewal that runs on the server
 on its own schedule. It's done when a public exposure works end to end, renews after a
 restart, and a failure neither breaks anything else nor reports success.
 
-Proven on the same server: a real certificate over port 443 alone, as root and as a normal
-user, beside Tailscale holding 443 on its own address. systemd restarted a killed Caddy, and
-removal stopped it and deleted its units.
+Proven on the same server on 2026-11-04:
 
-Still to prove, each needing a Cloudflare token on a test machine:
+- Public access got a real certificate over port 443 alone, as root and as a normal user,
+  beside Tailscale holding 443 on its own address. With `--cloudflare` it also made the DNS
+  record, and removing it deleted the record.
+- LAN access on the server's Tailscale address got a real certificate through Cloudflare
+  and was opened by name from another device. Your router may still hide the name; see
+  the README.
+- `renew` did nothing when nothing was due. `renew --force` got a new certificate and Caddy
+  served it at once. The timer's service runs cleanly.
+- systemd restarted a killed Caddy, and removal stopped it and deleted its units.
 
-- LAN access end to end, including another device opening it by name.
-- Public access with `--cloudflare` creating the DNS record.
-- A forced renewal (`ezexpose renew --force`) reloading Caddy with the new certificate.
+## Before the UI
+
+- A reboot test and a second Linux distribution, on a spare machine.
+- `apply --plan-file`, so a UI can approve one exact plan and apply that.
+- Progress as JSON lines, for apps reading it over SSH.
+- Checking the installed Tailscale version, fuzz tests for the Caddy input checks, and
+  tests on IPv6-only machines and behind carrier-grade NAT.
+- An install script and a first release.
 
 ## 5. Then the user experience and UI
 

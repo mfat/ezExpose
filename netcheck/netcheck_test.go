@@ -74,3 +74,11 @@ func TestDNSMustPointOnlyHere(t *testing.T) {
 		t.Errorf("rejected this machine's own IPv6 address: %q", got)
 	}
 }
+
+func TestIsTailnet(t *testing.T) {
+	for ip, want := range map[string]bool{"100.64.12.34": true, "192.168.1.20": false, "": false, "203.0.113.7": false} {
+		if IsTailnet(ip) != want {
+			t.Errorf("%q", ip)
+		}
+	}
+}

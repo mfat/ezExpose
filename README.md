@@ -23,7 +23,7 @@ Continue? [Y/n]
 |---|---|---|
 | `private` | Your own devices, over Tailscale | Tailscale with MagicDNS and HTTPS turned on |
 | `public` | Anyone on the internet | Your own domain pointing here, and port 443 |
-| `lan` | Devices on your home network | Your domain on Cloudflare, and a Cloudflare token |
+| `lan` | Devices on your home network, or with `--address`, your tailnet | Your domain on Cloudflare, and a Cloudflare token |
 
 Public access means anyone can reach the app. HTTPS encrypts the connection but isn't a
 login, so ezExpose asks you to confirm the app has its own.
@@ -82,8 +82,9 @@ go install github.com/mfat/ezExpose/cmd/ezexpose@latest
 |---|---|
 | Private, over Tailscale | Yes: opened from another device, run twice, killed mid-way and recovered, beside another app's route |
 | Public, Caddy on port 443 | Yes: a real certificate as root and as a normal user, beside Tailscale on the same port |
-| LAN, with Cloudflare | Not with ezExpose yet. The same packages got a certificate and DNS record in ezVaultwarden |
-| Certificate renewal | Caddy renews public certificates itself. A real LAN renewal is unproven |
+| Public, with Cloudflare making the record | Yes: record created, certificate in 18 seconds, record gone after removal |
+| LAN, with Cloudflare | Yes, on a server's Tailscale address: real certificate, opened by name from another device |
+| Certificate renewal | Yes: a forced LAN renewal, with Caddy serving the new certificate at once. Caddy renews public ones itself |
 
 ## The packages
 
@@ -105,4 +106,8 @@ Clear the token once the first account exists.
 ## Good to know
 
 Public DNS answers holding a private address get blocked by many routers, such as
-OpenWrt's rebind protection, so the LAN route can fail with a correct record.
+OpenWrt's rebind protection, so the LAN route can fail with a correct record. Tailscale's
+100.x addresses count as private too. The fix is an exception for your domain on the router.
+
+Cloudflare's token page doesn't always keep the permissions a link fills in, so ezExpose
+also gives the steps to make the token by hand.

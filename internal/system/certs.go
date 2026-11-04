@@ -43,8 +43,8 @@ func DNS(dir string) func(install string) (manager.DNS, error) {
 	return func(install string) (manager.DNS, error) {
 		raw, err := os.ReadFile(TokenFile(dir))
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("no Cloudflare token yet. Create one here, then save it with "+
-				"ezexpose cloudflare-token:\n  %s", cloudflare.TokenURL)
+			return nil, fmt.Errorf("no Cloudflare token yet. To make one:\n%s\nThen save it with: ezexpose cloudflare-token",
+				cloudflare.TokenSteps)
 		}
 		if err != nil {
 			return nil, err
