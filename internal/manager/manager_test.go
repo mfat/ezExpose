@@ -524,3 +524,26 @@ func TestOneNameServesOneApp(t *testing.T) {
 		t.Fatalf("%+v, %v", e, err)
 	}
 }
+
+func TestAPlanIsCheckedUnderTheSameLockAsTheWork(t *testing.T) {
+	w := newWorld(t)
+	m := w.manager()
+	p, _ := m.Plan(ctx, private)
+	// Another command takes 443 for a different app between plan and apply.
+	other := Request{Backend: "127.0.0.1:9090", Access: state.Private}
+	if _, err := m.Apply(ctx, other); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.ApplyPlan(ctx, p, false); CodeOf(err) != PlanChanged {
+		t.Fatalf("%v", err)
+	}
+	if len(w.ts.routes) != 1 {
+		t.Fatalf("applied a stale plan: %v", w.ts.routes)
+	}
+	unlock, _ := m.Store.Lock(0)
+	defer unlock()
+	p2, _ := m.Plan(ctx, private)
+	if _, err := m.ApplyPlan(ctx, p2, false); CodeOf(err) != Busy {
+		t.Fatalf("applied while another command held the lock: %v", err)
+	}
+}

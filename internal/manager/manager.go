@@ -223,11 +223,16 @@ func (m *Manager) Plan(ctx context.Context, r Request) (Plan, error) {
 	if err != nil {
 		return Plan{}, wrap(BadRecord, err)
 	}
-	found := find(&st, r)
+	return m.planWith(ctx, &st, r)
+}
+
+// planWith works out the plan against st, which the caller has loaded.
+func (m *Manager) planWith(ctx context.Context, st *state.State, r Request) (Plan, error) {
+	found := find(st, r)
 	if found != nil && len(found.Resources) > 0 {
 		return Plan{Request: r, Exposure: planned(*found), Existing: true, Steps: []string{"Check " + found.URL() + " and repair anything missing"}}, nil
 	}
-	if err := nameFree(&st, r, found); err != nil {
+	if err := nameFree(st, r, found); err != nil {
 		return Plan{}, err
 	}
 	e := state.Exposure{Backend: r.Backend, Access: r.Access, Host: r.Host, Port: r.Port, Name: r.Name}
@@ -239,7 +244,7 @@ func (m *Manager) Plan(ctx context.Context, r Request) (Plan, error) {
 			return Plan{}, wrap(TailscaleNotReady, err)
 		}
 		e.Host = host
-		if e.Port, err = m.pickPort(ctx, &st, "", host, r.Port); err != nil {
+		if e.Port, err = m.pickPort(ctx, st, "", host, r.Port); err != nil {
 			return Plan{}, err
 		}
 		steps = append(steps, fmt.Sprintf("Forward %s to %s over Tailscale, for your own devices only", e.URL(), target(e)))
@@ -280,20 +285,33 @@ func planned(e state.Exposure) state.Exposure {
 // app. If working it out again now gives anything different, nothing is changed:
 // approving one thing and getting another isn't allowed.
 func (m *Manager) ApplyPlan(ctx context.Context, p Plan, confirmed bool) (state.Exposure, error) {
-	now, err := m.Plan(ctx, p.Request)
-	if err != nil {
+	r := p.Request
+	if err := checkRequest(&r); err != nil {
 		return state.Exposure{}, err
 	}
-	if !samePlan(now, p) {
-		return state.Exposure{}, errorf(PlanChanged, "this machine changed since the plan was made, so nothing was "+
-			"changed. Make a new plan: it would now %s", strings.Join(now.Steps, "; "))
-	}
-	r := p.Request
 	r.Confirmed = confirmed
 	if r.Access == state.Private && r.Port == 0 {
 		r.Port = p.Exposure.Port // the port the plan showed, not whichever is free later
 	}
-	return m.Apply(ctx, r)
+	if err := needsConfirmation(r); err != nil {
+		return state.Exposure{}, err
+	}
+	var result state.Exposure
+	err := m.locked(func(st *state.State) error {
+		// Checked under the same lock as the work, so no other command can change
+		// the record in between.
+		now, err := m.planWith(ctx, st, p.Request)
+		if err != nil {
+			return err
+		}
+		if !samePlan(now, p) {
+			return errorf(PlanChanged, "this machine changed since the plan was made, so nothing was "+
+				"changed. Make a new plan: it would now %s", strings.Join(now.Steps, "; "))
+		}
+		result, err = m.applyLocked(ctx, st, r)
+		return err
+	})
+	return result, err
 }
 
 func samePlan(a, b Plan) bool {
@@ -358,67 +376,75 @@ func (m *Manager) Apply(ctx context.Context, r Request) (state.Exposure, error) 
 	if err := checkRequest(&r); err != nil {
 		return state.Exposure{}, err
 	}
-	if r.Access == state.Public && !r.Confirmed {
-		return state.Exposure{}, errorf(NeedsConfirmation, "public access lets anyone on the internet reach %s. "+
-			"HTTPS encrypts the connection but isn't a login, so the app needs its own", r.Backend)
+	if err := needsConfirmation(r); err != nil {
+		return state.Exposure{}, err
 	}
 	var result state.Exposure
 	err := m.locked(func(st *state.State) error {
-		e := find(st, r)
-		if err := nameFree(st, r, e); err != nil {
-			return err
-		}
-		if e == nil {
-			id, err := state.NewID("exp_", 4)
-			if err != nil {
-				return err
-			}
-			st.Exposures = append(st.Exposures, state.Exposure{
-				ID: id, Name: r.Name, Backend: r.Backend, Access: r.Access, Host: r.Host, Port: r.Port,
-				Cloudflare: r.Cloudflare || r.Access == state.LAN, Address: r.Address, Status: state.Applying, Created: m.now(),
-			})
-			e = &st.Exposures[len(st.Exposures)-1]
-		}
-		if e.Status == state.Removing {
-			return errorf(Invalid, "%s is being removed. Run: ezexpose remove %s", e.ID, e.ID)
-		}
-		if changed := (r.Address != "" && r.Address != e.Address) || (r.Port != 0 && r.Port != e.Port) || (r.Cloudflare && !e.Cloudflare); changed {
-			if len(e.Resources) > 0 {
-				return errorf(Invalid, "%s is already set up differently. Remove it first: ezexpose remove %s", e.ID, e.ID)
-			}
-			// Nothing was set up yet, so the new settings simply replace the old.
-			if r.Address != "" {
-				e.Address = r.Address
-			}
-			e.Cloudflare = e.Cloudflare || r.Cloudflare
-			if r.Port != 0 {
-				e.Port = r.Port
-			}
-		}
-		e.Status, e.Error = state.Applying, ""
-		if err := m.save(st); err != nil {
-			return err
-		}
-		err := m.up(ctx, st, e, r)
-		e = st.Find(e.ID)
-		if err != nil {
-			e.Status, e.Error = state.Failed, err.Error()
-			if len(e.Resources) == 0 {
-				// Nothing was set up, so there's nothing to recover or remove.
-				result = *e
-				st.Delete(e.ID)
-				return errors.Join(err, m.save(st))
-			}
-			if saveErr := m.save(st); saveErr != nil {
-				return errors.Join(err, saveErr)
-			}
-			result = *e
-			return err
-		}
-		result = *e
-		return nil
+		var err error
+		result, err = m.applyLocked(ctx, st, r)
+		return err
 	})
 	return result, err
+}
+
+func needsConfirmation(r Request) error {
+	if r.Access == state.Public && !r.Confirmed {
+		return errorf(NeedsConfirmation, "public access lets anyone on the internet reach %s. "+
+			"HTTPS encrypts the connection but isn't a login, so the app needs its own", r.Backend)
+	}
+	return nil
+}
+
+// applyLocked does Apply's work. The caller holds the lock.
+func (m *Manager) applyLocked(ctx context.Context, st *state.State, r Request) (state.Exposure, error) {
+	e := find(st, r)
+	if err := nameFree(st, r, e); err != nil {
+		return state.Exposure{}, err
+	}
+	if e == nil {
+		id, err := state.NewID("exp_", 4)
+		if err != nil {
+			return state.Exposure{}, err
+		}
+		st.Exposures = append(st.Exposures, state.Exposure{
+			ID: id, Name: r.Name, Backend: r.Backend, Access: r.Access, Host: r.Host, Port: r.Port,
+			Cloudflare: r.Cloudflare || r.Access == state.LAN, Address: r.Address, Status: state.Applying, Created: m.now(),
+		})
+		e = &st.Exposures[len(st.Exposures)-1]
+	}
+	if e.Status == state.Removing {
+		return *e, errorf(Invalid, "%s is being removed. Run: ezexpose remove %s", e.ID, e.ID)
+	}
+	if changed := (r.Address != "" && r.Address != e.Address) || (r.Port != 0 && r.Port != e.Port) || (r.Cloudflare && !e.Cloudflare); changed {
+		if len(e.Resources) > 0 {
+			return *e, errorf(Invalid, "%s is already set up differently. Remove it first: ezexpose remove %s", e.ID, e.ID)
+		}
+		// Nothing was set up yet, so the new settings simply replace the old.
+		if r.Address != "" {
+			e.Address = r.Address
+		}
+		e.Cloudflare = e.Cloudflare || r.Cloudflare
+		if r.Port != 0 {
+			e.Port = r.Port
+		}
+	}
+	e.Status, e.Error = state.Applying, ""
+	if err := m.save(st); err != nil {
+		return *e, err
+	}
+	err := m.up(ctx, st, e, r)
+	e = st.Find(e.ID)
+	if err == nil {
+		return *e, nil
+	}
+	e.Status, e.Error = state.Failed, err.Error()
+	result := *e
+	if len(e.Resources) == 0 {
+		// Nothing was set up, so there's nothing to recover or remove.
+		st.Delete(e.ID)
+	}
+	return result, errors.Join(err, m.save(st))
 }
 
 // up does each step in turn. Each one is safe to repeat.
