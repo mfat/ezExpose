@@ -51,6 +51,8 @@ type App struct {
 	Tailscale func(ctx context.Context) (string, error)
 	// Progress receives progress from everything that reports it.
 	Progress *Progress
+	// Look runs the read-only audit.
+	Look Audit
 
 	json bool
 	// emitted is set once the result has been written: there's only ever one.
@@ -60,6 +62,7 @@ type App struct {
 const usage = `ezExpose puts apps you already run behind real HTTPS.
 
 Usage:
+  ezexpose audit                   See what's already here, changing nothing
   ezexpose doctor                  Check this machine is ready
   ezexpose plan  --backend ADDR --access private|public|lan [--host NAME]
                                    Show what apply would do, changing nothing
@@ -91,6 +94,7 @@ func (a *App) Run(ctx context.Context, args []string) int {
 		return 0
 	}
 	commands := map[string]func(context.Context, []string) error{
+		"audit":            a.audit,
 		"doctor":           a.doctor,
 		"plan":             a.plan,
 		"apply":            a.apply,
@@ -539,10 +543,10 @@ func (a *App) logs(ctx context.Context, args []string) error {
 }
 
 // Commands lists what this build can do, so an app can check before asking.
-var Commands = []string{"doctor", "plan", "apply", "status", "remove", "reconcile", "renew", "cloudflare-token", "logs", "version"}
+var Commands = []string{"audit", "doctor", "plan", "apply", "status", "remove", "reconcile", "renew", "cloudflare-token", "logs", "version"}
 
 // Features lists abilities beyond the commands themselves.
-var Features = []string{"plan-file", "progress-events", "lan-address"}
+var Features = []string{"plan-file", "progress-events", "lan-address", "audit-v1"}
 
 func (a *App) version(ctx context.Context, args []string) error {
 	fs := a.flags("version")

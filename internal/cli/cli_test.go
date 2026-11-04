@@ -11,7 +11,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/mfat/ezExpose/internal/audit"
 	"github.com/mfat/ezExpose/internal/manager"
 	"github.com/mfat/ezExpose/internal/state"
 	"github.com/mfat/ezExpose/internal/system"
@@ -263,5 +265,18 @@ func TestJSONNeverAsksEvenInATerminal(t *testing.T) {
 	a.Run(context.Background(), []string{"remove", "--json", "exp_1"})
 	if envelope(t, out.Bytes())["error"].(map[string]any)["code"] != string(manager.NeedsConfirmation) || errs.Len() != 0 {
 		t.Fatalf("stdout %s, stderr %q", out, errs)
+	}
+}
+
+func TestAuditIsOneJSONResult(t *testing.T) {
+	a, out, _ := app(t, "")
+	a.Look = func(ctx context.Context) audit.Report {
+		return audit.Run(ctx, audit.Sources{Owned: a.Manager.List}, time.Now())
+	}
+	if code := a.Run(context.Background(), []string{"audit", "--json"}); code != 0 || results(t, out.String()) != 1 {
+		t.Fatalf("exit %d: %s", code, out)
+	}
+	if _, err := os.Stat(a.Manager.Store.Dir + "/state.json"); !os.IsNotExist(err) {
+		t.Fatal("the audit wrote a record")
 	}
 }

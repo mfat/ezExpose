@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -158,4 +159,19 @@ func (c Caddy) Logs(ctx context.Context, lines int) *exec.Cmd {
 		args = append([]string{"--user"}, args...)
 	}
 	return exec.CommandContext(ctx, "journalctl", args...)
+}
+
+// PID returns the process ID of ezExpose's Caddy, or 0 if it isn't running. It
+// only asks systemd.
+func (c Caddy) PID(ctx context.Context) int {
+	args := []string{"show", "-p", "MainPID", "--value", caddyUnit}
+	if !c.Systemd.Root {
+		args = append([]string{"--user"}, args...)
+	}
+	out, err := exec.CommandContext(ctx, "systemctl", args...).Output()
+	if err != nil {
+		return 0
+	}
+	pid, _ := strconv.Atoi(strings.TrimSpace(string(out)))
+	return pid
 }

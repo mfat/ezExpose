@@ -547,3 +547,15 @@ func TestAPlanIsCheckedUnderTheSameLockAsTheWork(t *testing.T) {
 		t.Fatalf("applied while another command held the lock: %v", err)
 	}
 }
+
+func TestAPortConflictNamesTheProgram(t *testing.T) {
+	w := newWorld(t)
+	w.net.dns["app.example.com"] = []string{"203.0.113.7"}
+	w.net.taken[":443"] = syscall.EADDRINUSE
+	w.net.taken["192.168.1.20:443"] = syscall.EADDRINUSE
+	m := w.manager()
+	m.PortUser = func(port int) string { return map[int]string{443: "nginx"}[port] }
+	if _, err := m.Apply(ctx, public); CodeOf(err) != PortUnavailable || !strings.Contains(err.Error(), "used by nginx") {
+		t.Fatalf("%v", err)
+	}
+}

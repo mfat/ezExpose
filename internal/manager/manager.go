@@ -93,6 +93,9 @@ type Manager struct {
 	Wait time.Duration
 	// Patience scales the waits for DNS and certificates. Tests make it tiny.
 	Patience time.Duration
+	// PortUser names the program listening on a port, or "". It makes conflicts
+	// clearer; nil leaves them unnamed.
+	PortUser func(port int) string
 }
 
 // Request says what to expose and how.
@@ -804,8 +807,14 @@ func (m *Manager) freePort(st *state.State, e *state.Exposure) (string, error) {
 	if ip != "" && m.Net.Listen(listenAddr(ip, e.Port)) == nil {
 		return ip, nil
 	}
-	if e.Port == 443 {
-		return "", errorf(PortUnavailable, "%s", netcheck.Port443(func() error { return err }))
+	who := ""
+	if m.PortUser != nil {
+		if name := m.PortUser(e.Port); name != "" {
+			who = " It's used by " + name + "."
+		}
 	}
-	return "", errorf(PortUnavailable, "port %d can't be used: %v", e.Port, err)
+	if e.Port == 443 {
+		return "", errorf(PortUnavailable, "%s%s", netcheck.Port443(func() error { return err }), who)
+	}
+	return "", errorf(PortUnavailable, "port %d can't be used: %v.%s", e.Port, err, who)
 }

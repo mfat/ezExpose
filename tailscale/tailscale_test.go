@@ -197,3 +197,35 @@ func TestOlder(t *testing.T) {
 		}
 	}
 }
+
+func TestRoutesListsEverythingIncludingFunnel(t *testing.T) {
+	routes, err := parseRoutes([]byte(`{
+	  "TCP": {"443": {"HTTPS": true}, "8443": {"HTTPS": true}, "5432": {"TCPForward": "127.0.0.1:5432"}},
+	  "Web": {
+	    "box.tail1.ts.net:443": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:18443"}}},
+	    "box.tail1.ts.net:8443": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:3000"}, "/docs": {"Path": "/srv/docs"}}}
+	  },
+	  "AllowFunnel": {"box.tail1.ts.net:8443": true}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(routes) != 4 {
+		t.Fatalf("%+v", routes)
+	}
+	if routes[0].Port != 443 || routes[0].Funnel || routes[0].Proxy != "http://127.0.0.1:18443" {
+		t.Errorf("443: %+v", routes[0])
+	}
+	if routes[1].Port != 5432 || routes[1].Proxy != "tcp://127.0.0.1:5432" {
+		t.Errorf("tcp: %+v", routes[1])
+	}
+	if !routes[2].Funnel || !routes[3].Funnel || routes[3].Other != "files in /srv/docs" {
+		t.Errorf("funnel: %+v %+v", routes[2], routes[3])
+	}
+	if r, err := parseRoutes([]byte(`{}`)); err != nil || len(r) != 0 {
+		t.Fatalf("%v %v", r, err)
+	}
+	if _, err := parseRoutes([]byte(`{nope`)); err == nil {
+		t.Fatal("accepted broken JSON")
+	}
+}

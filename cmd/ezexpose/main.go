@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strings"
 	"syscall"
@@ -13,6 +14,7 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/mfat/ezExpose/internal/audit"
 	"github.com/mfat/ezExpose/internal/cli"
 	"github.com/mfat/ezExpose/internal/manager"
 	"github.com/mfat/ezExpose/internal/state"
@@ -62,6 +64,34 @@ func main() {
 		Log:     progress,
 		Wait:    10 * time.Second,
 	}
+	m.PortUser = func(port int) string {
+		listeners, _, _ := audit.Listeners("/proc")
+		for _, l := range listeners {
+			if l.Port == port && l.Process != "" {
+				return l.Process
+			}
+		}
+		return ""
+	}
+	look := func(ctx context.Context) audit.Report {
+		src := audit.Sources{
+			Owned:     m.List,
+			Listeners: func() ([]audit.Listener, int, error) { return audit.Listeners("/proc") },
+			CaddyPID:  caddy.PID,
+			Root:      os.Geteuid() == 0,
+		}
+		if _, err := exec.LookPath("tailscale"); err == nil {
+			src.Routes = ts.Routes
+		}
+		if _, err := exec.LookPath("docker"); err == nil {
+			src.Containers = func(ctx context.Context) ([]audit.Container, error) {
+				return audit.Containers(ctx, func(ctx context.Context, args ...string) ([]byte, error) {
+					return exec.CommandContext(ctx, "docker", args...).CombinedOutput()
+				})
+			}
+		}
+		return audit.Run(ctx, src, time.Now().UTC())
+	}
 	args := os.Args[1:]
 	if len(args) > 0 && args[0] == "renew" {
 		m.Wait = 30 * time.Minute // a timer has nobody to tell, so it takes its turn
@@ -78,6 +108,7 @@ func main() {
 		},
 		Tailscale: ts.Version,
 		Progress:  progress,
+		Look:      look,
 		Logs: func(ctx context.Context, lines int) error {
 			cmd := caddy.Logs(ctx, lines)
 			cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr

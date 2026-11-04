@@ -3,11 +3,13 @@
 package tailscale
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -26,6 +28,12 @@ func New() CLI {
 		}
 		return exec.CommandContext(ctx, "tailscale", args...).CombinedOutput()
 	}}
+}
+
+// NewWith returns a CLI that runs commands through run instead of the real
+// tailscale command, for tests in other packages.
+func NewWith(run func(ctx context.Context, args ...string) ([]byte, error)) CLI {
+	return CLI{run: run}
 }
 
 type status struct {
@@ -197,4 +205,83 @@ func detail(out []byte, err error) error {
 		return fmt.Errorf("tailscale: %s", text)
 	}
 	return err
+}
+
+// A Route is one thing Tailscale serves on this machine.
+type Route struct {
+	Host   string `json:"host,omitempty"` // empty for a plain TCP forward
+	Port   int    `json:"port"`
+	Path   string `json:"path,omitempty"`
+	Proxy  string `json:"proxy,omitempty"` // where it forwards, if it's a proxy
+	Other  string `json:"other,omitempty"` // a file, folder or text it serves instead
+	Funnel bool   `json:"funnel"`          // reachable from the whole internet, not just the tailnet
+}
+
+type fullConfig struct {
+	TCP map[string]struct {
+		HTTPS      bool
+		TCPForward string
+	}
+	Web map[string]struct {
+		Handlers map[string]struct {
+			Proxy string
+			Path  string
+			Text  string
+		}
+	}
+	AllowFunnel map[string]bool
+}
+
+// Routes lists everything Tailscale serves, whoever set it up. It only reads.
+func (c CLI) Routes(ctx context.Context) ([]Route, error) {
+	out, err := c.run(ctx, "serve", "status", "--json")
+	if err != nil {
+		return nil, permission(out, err)
+	}
+	return parseRoutes(out)
+}
+
+func parseRoutes(out []byte) ([]Route, error) {
+	var sc fullConfig
+	if len(strings.TrimSpace(string(out))) == 0 {
+		return nil, nil
+	}
+	if err := json.Unmarshal(out, &sc); err != nil {
+		return nil, fmt.Errorf("couldn't read Tailscale's serve settings: %w", err)
+	}
+	var routes []Route
+	for hostPort, web := range sc.Web {
+		host, portText, _ := strings.Cut(hostPort, ":")
+		port, _ := strconv.Atoi(portText)
+		for path, h := range web.Handlers {
+			r := Route{Host: host, Port: port, Path: path, Proxy: h.Proxy, Funnel: sc.AllowFunnel[hostPort]}
+			switch {
+			case h.Path != "":
+				r.Other = "files in " + h.Path
+			case h.Text != "":
+				r.Other = "fixed text"
+			}
+			routes = append(routes, r)
+		}
+	}
+	for portText, tcp := range sc.TCP {
+		if tcp.TCPForward == "" {
+			continue // HTTPS: already listed with its web handlers
+		}
+		port, _ := strconv.Atoi(portText)
+		routes = append(routes, Route{Port: port, Proxy: "tcp://" + tcp.TCPForward, Funnel: funnelOnPort(sc.AllowFunnel, port)})
+	}
+	slices.SortFunc(routes, func(a, b Route) int {
+		return cmp.Or(cmp.Compare(a.Port, b.Port), cmp.Compare(a.Host, b.Host), cmp.Compare(a.Path, b.Path))
+	})
+	return routes, nil
+}
+
+func funnelOnPort(allow map[string]bool, port int) bool {
+	for hostPort, on := range allow {
+		if on && strings.HasSuffix(hostPort, ":"+strconv.Itoa(port)) {
+			return true
+		}
+	}
+	return false
 }
