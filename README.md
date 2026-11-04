@@ -1,58 +1,108 @@
 # ezExpose
 
-Go packages that put self-hosted apps behind real HTTPS, without opening your machine
-to the internet unless you choose to. Extracted from
+Put apps you already run behind real HTTPS, without opening your machine to the internet
+unless you choose to. It grew out of
 [ezVaultwarden](https://github.com/mfat/ezVaultwarden).
 
-This is a library for now. There's no command to run yet. It will become a tool of its own,
-and the [roadmap](docs/roadmap.md) says in what order.
+> **Early development.** The core is being made stable before any UI. The
+> [roadmap](docs/roadmap.md) says what's done and what's next.
 
-| Package | Job |
+```text
+$ ezexpose apply --backend 127.0.0.1:8080 --access private
+Address: https://box.tail1.ts.net
+  1. Check that 127.0.0.1:8080 answers
+  2. Forward https://box.tail1.ts.net to http://127.0.0.1:8080 over Tailscale, for your own devices only
+Continue? [Y/n]
+✓ https://box.tail1.ts.net now reaches 127.0.0.1:8080  (exp_0a2afc9f)
+  Only your own devices on Tailscale can open it.
+```
+
+## Three ways in
+
+| Access | Who can open it | What it needs |
+|---|---|---|
+| `private` | Your own devices, over Tailscale | Tailscale with MagicDNS and HTTPS turned on |
+| `public` | Anyone on the internet | Your own domain pointing here, and port 443 |
+| `lan` | Devices on your home network | Your domain on Cloudflare, and a Cloudflare token |
+
+Public access means anyone can reach the app. HTTPS encrypts the connection but isn't a
+login, so ezExpose asks you to confirm the app has its own.
+
+## Commands
+
+| Command | What it does |
 |---|---|
-| `tailscale` | Serve a local port to your own devices, with a real certificate |
-| `caddy` | Render a Caddyfile for one or more sites on port 443, with port 80 closed |
-| `acme` | Get certificates over the DNS challenge with `lego`, so no ports need to be open |
-| `cloudflare` | Keep one DNS record pointing at a machine. It only changes records this install created |
-| `netcheck` | Check port 443, whether every DNS answer points here, and whether the machine is reachable |
-| `fetch` | Verified, resumable downloads, and the pinned `lego` |
+| `doctor` | Check this machine is ready for each kind of access |
+| `plan` | Show what `apply` would do, changing nothing |
+| `apply` | Expose an app, or check and repair one already exposed |
+| `status [ID]` | Show what's exposed, as last recorded |
+| `remove ID` | Take an exposure down |
+| `reconcile` | Check everything against the machine, and finish interrupted work |
+| `renew [--force]` | Renew LAN certificates that are due. A timer runs it twice a day |
+| `cloudflare-token` | Save a Cloudflare token, readable only by you |
+| `logs` | Show Caddy's and renewal's recent output |
+
+Add `--json` to any command for one JSON object on stdout, with `schema`, `ok` and, on
+failure, an `error` with a `code` such as `not_ours`, `backend_down` or `port`. Progress goes
+to stderr. Exit codes are 0 for done, 1 for failed and 2 for used wrongly.
+
+## What it promises
+
+- **It never changes what it didn't create.** A Tailscale route, DNS record or Caddy you
+  set up yourself is left alone, and the error says so.
+- **An interruption is always recoverable.** Each change is saved as pending before it's
+  made. After a crash, `reconcile` or running the same command again finishes or undoes it.
+- **"Removed" means checked.** An exposure leaves the record only once every part is
+  confirmed gone.
+- **It keeps running without you.** Caddy and renewal are systemd services: user services,
+  or system ones when run as root.
+
+The record lives in `~/.local/state/ezexpose`, or `/var/lib/ezexpose` for root.
+
+## Install
+
+There's no release yet. To build it:
+
+```bash
+go install github.com/mfat/ezExpose/cmd/ezexpose@latest
+```
 
 ## Requirements
 
-- Go 1.27.3 or later.
-- `tailscale` needs the Tailscale command installed and signed in, with MagicDNS and HTTPS
-  turned on in the admin console. Without root, run `sudo tailscale set --operator=$USER` once.
-- `acme` runs `lego`. `fetch` pins the Linux builds for 64-bit Intel/AMD and ARM.
-- `caddy` only writes the config. Your tool runs Caddy itself.
-- The port 443 fix that `netcheck` suggests is for Linux. The packages have only been used
-  on Linux, on Ubuntu 24.04 and WSL.
+- Linux with systemd, on 64-bit Intel/AMD or ARM. It's been used on Ubuntu 24.04 and WSL.
+- `private`: Tailscale installed and signed in, with MagicDNS and HTTPS turned on in the
+  admin console. Without root, run `sudo tailscale set --operator=$USER` once.
+- `public`: port 443. Without root, `doctor` shows the one setting that allows it.
+- `lan`: a Cloudflare token with Zone:Read and DNS:Edit.
+- Go 1.27.3 or later to build it.
 
 ## Status
 
-| Route | Tested for real in ezVaultwarden |
+| Route | Tested for real |
 |---|---|
-| Tailscale | Yes, reached from a phone |
-| Public, Caddy on port 443 | Yes, a real certificate and the first account on a server |
-| DNS challenge with Cloudflare | The certificate and DNS record worked. Another device connecting by name, and a real renewal, are unproven |
+| Private, over Tailscale | Yes: opened from another device, run twice, killed mid-way and recovered, beside another app's route |
+| Public, Caddy on port 443 | Yes: a real certificate as root and as a normal user, beside Tailscale on the same port |
+| LAN, with Cloudflare | Not with ezExpose yet. The same packages got a certificate and DNS record in ezVaultwarden |
+| Certificate renewal | Caddy renews public certificates itself. A real LAN renewal is unproven |
 
-This repo's own tests use stand-ins, and these packages haven't been run together here.
+## The packages
 
-## First accounts on a public app
+The command is built on packages other Go programs can use too.
 
-Set `SetupToken` and `SetupPaths` on a `caddy.Site`, and those paths answer 403 unless the
-browser came through `/?setup=TOKEN`. Strangers can't claim the app first, and an interrupted
-setup stays closed. Clear the token once the first account exists.
+| Package | Job |
+|---|---|
+| `tailscale` | Serve a local port to your own devices, never replacing someone else's route |
+| `caddy` | Render a Caddyfile for one or more sites on port 443, with port 80 closed |
+| `acme` | Get certificates over the DNS challenge with `lego`, so no ports need to be open |
+| `cloudflare` | Keep one DNS record pointing at a machine. It only changes records this install created |
+| `netcheck` | Check port 443, whether every DNS answer points here, and the public address |
+| `fetch` | Verified, resumable downloads of the pinned Caddy and `lego` |
 
-## Tailscale routes
+`caddy.Site` can also keep an app's signup closed to strangers: set `SetupToken` and
+`SetupPaths`, and those paths answer 403 unless the browser came through `/?setup=TOKEN`.
+Clear the token once the first account exists.
 
-`tailscale.CLI.Serve` and `Close` only act on port 443 when it's free or already forwards to
-your app. Any other route returns `ErrNotOurs` and stays as it was. Tailscale forwards
-straight to the app, past Caddy, so call `Close` before changing anything else, and don't
-report access as closed unless it succeeds.
-
-## Before you expose anything
-
-An app with no login of its own is open to anyone who reaches it. A tool built on these
-packages has to check that, because they can't.
+## Good to know
 
 Public DNS answers holding a private address get blocked by many routers, such as
 OpenWrt's rebind protection, so the LAN route can fail with a correct record.
