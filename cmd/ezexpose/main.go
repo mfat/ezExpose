@@ -75,6 +75,7 @@ func main() {
 			fmt.Fprintln(os.Stderr)
 			return strings.TrimSpace(string(raw)), err
 		},
+		Tailscale: ts.Version,
 		Logs: func(ctx context.Context, lines int) error {
 			cmd := caddy.Logs(ctx, lines)
 			cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr

@@ -14,10 +14,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mfat/ezExpose/fetch"
 	"github.com/mfat/ezExpose/internal/manager"
 	"github.com/mfat/ezExpose/internal/state"
 	"github.com/mfat/ezExpose/internal/system"
 	"github.com/mfat/ezExpose/netcheck"
+	"github.com/mfat/ezExpose/tailscale"
 )
 
 // Schema is the version of the JSON output. Fields may be added within a
@@ -39,6 +41,8 @@ type App struct {
 	ReadSecret func() (string, error)
 	// Logs shows recent service output.
 	Logs func(ctx context.Context, lines int) error
+	// Tailscale returns the installed Tailscale's version.
+	Tailscale func(ctx context.Context) (string, error)
 
 	json bool
 }
@@ -423,15 +427,43 @@ func (a *App) logs(ctx context.Context, args []string) error {
 	return a.Logs(ctx, *lines)
 }
 
-func (a *App) version(_ context.Context, args []string) error {
+// Commands lists what this build can do, so an app can check before asking.
+var Commands = []string{"doctor", "plan", "apply", "status", "remove", "reconcile", "renew", "cloudflare-token", "logs", "version"}
+
+// Features lists abilities beyond the commands themselves.
+var Features = []string{"plan-file", "progress-events", "lan-address"}
+
+func (a *App) version(ctx context.Context, args []string) error {
 	fs := a.flags("version")
 	if err := parse(fs, args); err != nil {
 		return err
 	}
+	installed := ""
+	if a.Tailscale != nil {
+		installed, _ = a.Tailscale(ctx)
+	}
 	if a.json {
-		a.emit(map[string]any{"version": a.Version}, true)
+		a.emit(map[string]any{
+			"version":  a.Version,
+			"commands": Commands,
+			"features": Features,
+			"tools":    map[string]string{"caddy": fetch.CaddyVersion, "lego": fetch.LegoVersion},
+			"tailscale": map[string]any{
+				"installed": installed,
+				"minimum":   tailscale.MinVersion,
+				"ok":        installed != "" && !tailscale.Older(installed, tailscale.MinVersion),
+			},
+		}, true)
 		return nil
 	}
-	fmt.Fprintf(a.Out, "ezExpose %s\n", a.Version)
+	fmt.Fprintf(a.Out, "ezExpose %s\n  Caddy %s, lego %s\n", a.Version, fetch.CaddyVersion, fetch.LegoVersion)
+	switch {
+	case installed == "":
+		fmt.Fprintf(a.Out, "  Tailscale not found (private access needs %s or later)\n", tailscale.MinVersion)
+	case tailscale.Older(installed, tailscale.MinVersion):
+		fmt.Fprintf(a.Out, "  Tailscale %s, too old: private access needs %s or later\n", installed, tailscale.MinVersion)
+	default:
+		fmt.Fprintf(a.Out, "  Tailscale %s\n", installed)
+	}
 	return nil
 }

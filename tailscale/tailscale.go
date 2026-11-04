@@ -34,8 +34,50 @@ type status struct {
 	Self         struct{ DNSName string }
 }
 
+// MinVersion is the oldest Tailscale whose serve command works the way this
+// package uses it, with --bg and a port per route.
+const MinVersion = "1.52.0"
+
+// Version returns the installed Tailscale's version, such as 1.104.4.
+func (c CLI) Version(ctx context.Context) (string, error) {
+	out, err := c.run(ctx, "version")
+	if err != nil {
+		return "", fmt.Errorf("couldn't read Tailscale's version: %w", detail(out, err))
+	}
+	first, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
+	return strings.TrimSpace(first), nil
+}
+
+// Older reports whether version a comes before b. Anything after a dash, as in
+// 1.104.4-t9382131, is ignored.
+func Older(a, b string) bool {
+	pa, pb := parts(a), parts(b)
+	for i := range pa {
+		if pa[i] != pb[i] {
+			return pa[i] < pb[i]
+		}
+	}
+	return false
+}
+
+func parts(v string) [3]int {
+	v, _, _ = strings.Cut(strings.TrimPrefix(v, "v"), "-")
+	var out [3]int
+	for i, field := range strings.SplitN(v, ".", 3) {
+		out[i], _ = strconv.Atoi(field)
+	}
+	return out
+}
+
 // Lookup returns this machine's tailnet name, once it can have a certificate.
 func (c CLI) Lookup(ctx context.Context) (string, error) {
+	version, err := c.Version(ctx)
+	if err != nil {
+		return "", err
+	}
+	if Older(version, MinVersion) {
+		return "", fmt.Errorf("Tailscale %s is too old. Update it to %s or later: https://tailscale.com/download", version, MinVersion)
+	}
 	out, err := c.run(ctx, "status", "--json")
 	if err != nil {
 		return "", fmt.Errorf("couldn't read Tailscale's status: %w", detail(out, err))

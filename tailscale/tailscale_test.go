@@ -8,7 +8,12 @@ import (
 )
 
 func fake(out string, err error) CLI {
-	return CLI{run: func(context.Context, ...string) ([]byte, error) { return []byte(out), err }}
+	return CLI{run: func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "version" {
+			return []byte("1.104.4\n  tailscale commit: abc\n"), nil
+		}
+		return []byte(out), err
+	}}
 }
 
 func TestLookupReturnsTheNameWithoutItsTrailingDot(t *testing.T) {
@@ -162,5 +167,33 @@ func TestEachPortIsSeparate(t *testing.T) {
 	}
 	if len(d.changes) != 1 || d.changes[0] != "serve --bg --https=8443 "+ours {
 		t.Fatalf("ran: %v", d.changes)
+	}
+}
+
+func TestAnOldTailscaleIsRefused(t *testing.T) {
+	old := CLI{run: func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "version" {
+			return []byte("1.50.1\n"), nil
+		}
+		t.Fatal("went on with an old Tailscale")
+		return nil, nil
+	}}
+	if _, err := old.Lookup(context.Background()); err == nil || !strings.Contains(err.Error(), "too old") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestOlder(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want bool
+	}{
+		{"1.50.1", "1.52.0", true}, {"1.52.0", "1.52.0", false}, {"1.104.4", "1.52.0", false},
+		{"1.9.0", "1.52.0", true}, {"2.0.0", "1.52.0", false}, {"1.104.4-t9382131", "1.104.5", true},
+	}
+	for _, c := range cases {
+		if Older(c.a, c.b) != c.want {
+			t.Errorf("Older(%s, %s) != %v", c.a, c.b, c.want)
+		}
 	}
 }

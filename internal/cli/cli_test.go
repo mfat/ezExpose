@@ -122,3 +122,14 @@ func TestDoctorFailsWhenNothingIsReady(t *testing.T) {
 		t.Fatalf("public and lan are still ready: %d %s", code, out2)
 	}
 }
+
+func TestVersionTellsAnAppWhatItCanDo(t *testing.T) {
+	a, out, _ := app(t, "")
+	a.Tailscale = func(context.Context) (string, error) { return "1.50.0", nil }
+	a.Run(context.Background(), []string{"version", "--json"})
+	got := envelope(t, out.Bytes())
+	ts := got["tailscale"].(map[string]any)
+	if got["version"] != "test" || ts["ok"] != false || ts["installed"] != "1.50.0" || len(got["commands"].([]any)) == 0 {
+		t.Fatalf("%s", out)
+	}
+}
