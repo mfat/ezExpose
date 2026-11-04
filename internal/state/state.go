@@ -222,6 +222,11 @@ func (s Store) Save(st State) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
+	// A crash between these two steps leaves the .new link behind. It's only ever a
+	// copy of an older record, so it's safe to replace.
+	if err := os.Remove(s.backup() + ".new"); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
 	if err := os.Link(s.file(), s.backup()+".new"); err == nil {
 		if err := os.Rename(s.backup()+".new", s.backup()); err != nil {
 			return err

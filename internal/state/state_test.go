@@ -97,3 +97,25 @@ func TestURL(t *testing.T) {
 		}
 	}
 }
+
+func TestACrashWhileBackingUpDoesntBlockSaving(t *testing.T) {
+	s := Store{Dir: t.TempDir()}
+	st, _ := s.Load()
+	st.Zone = "first"
+	_ = s.Save(st)
+	// Left by a crash after linking the backup but before renaming it.
+	if err := os.WriteFile(s.backup()+".new", []byte("stale"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st.Zone = "second"
+	if err := s.Save(st); err != nil {
+		t.Fatalf("blocked: %v", err)
+	}
+	raw, _ := os.ReadFile(s.backup())
+	if !strings.Contains(string(raw), "first") {
+		t.Fatalf("backup: %s", raw)
+	}
+	if got, _ := s.Load(); got.Zone != "second" {
+		t.Fatalf("saved %q", got.Zone)
+	}
+}
