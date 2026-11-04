@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/mfat/ezExpose/caddy"
+	"github.com/mfat/ezExpose/cloudflare"
 	"github.com/mfat/ezExpose/internal/state"
 	"github.com/mfat/ezExpose/netcheck"
 	"github.com/mfat/ezExpose/tailscale"
@@ -544,17 +545,27 @@ func (m *Manager) pointDNS(ctx context.Context, st *state.State, e *state.Exposu
 		return wrap(NoCloudflare, err)
 	}
 	st.Zone = zone
+	var previous *state.Resource
+	if res := e.Resource(state.DNSRecord); res != nil {
+		saved := *res
+		previous = &saved
+	}
 	if e, err = m.begin(st, e, state.Resource{Kind: state.DNSRecord, Ref: zone + "/" + e.Host, Target: ip, Owned: true}); err != nil {
 		return err
 	}
 	m.say("Pointing %s at %s in Cloudflare...", e.Host, ip)
 	owned, err := d.Point(ctx, zone, e.Host, ip)
-	if err != nil {
+	switch {
+	case errors.Is(err, cloudflare.ErrNotOurs):
+		// Certain: nothing was changed, so what was there before still stands.
 		e.Drop(state.DNSRecord)
-		_ = m.save(st)
-		if strings.Contains(err.Error(), "left alone") {
-			return wrap(NotOurs, err)
+		if previous != nil {
+			e.Resources = append(e.Resources, *previous)
 		}
+		return errors.Join(wrap(NotOurs, err), m.save(st))
+	case err != nil:
+		// Uncertain: the change may have happened with the reply lost. It stays
+		// pending, and recovery asks Cloudflare which it was.
 		return wrap(DNSNotReady, err)
 	}
 	return m.finish(st, e, state.DNSRecord, owned)

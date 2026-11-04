@@ -440,3 +440,47 @@ func TestAnUnreachablePublicMachineIsExplained(t *testing.T) {
 		t.Fatalf("left behind: %+v, %v", w.proxy.sites, w.dns.records)
 	}
 }
+
+func TestALostCloudflareReplyNeverOrphansARecord(t *testing.T) {
+	w := newWorld(t)
+	w.net.dns["app.example.com"] = []string{"203.0.113.7"}
+	w.dns.loseResponse = true
+	m := w.manager()
+	if _, err := m.Apply(ctx, public); CodeOf(err) != DNSNotReady {
+		t.Fatalf("%v", err)
+	}
+	if w.dns.records["app.example.com"].ip == "" {
+		t.Fatal("the stand-in should have made the record")
+	}
+	list, _ := m.List()
+	if len(list) != 1 || list[0].Resource(state.DNSRecord) == nil {
+		t.Fatalf("forgot the record it may have made: %+v", list)
+	}
+	w.dns.loseResponse = false
+	if err := m.Remove(ctx, list[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if len(w.dns.records) != 0 {
+		t.Fatalf("orphaned: %v", w.dns.records)
+	}
+}
+
+func TestADefiniteConflictKeepsTrackOfOurOldRecord(t *testing.T) {
+	w := newWorld(t)
+	w.net.dns["app.example.com"] = []string{"203.0.113.7"}
+	m := w.manager()
+	e, err := m.Apply(ctx, public)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The machine's address changes, and someone else's record is now in the way.
+	w.net.public = "203.0.113.8"
+	w.dns.records["app.example.com"] = dnsRecord{"198.51.100.20", "someone"}
+	if _, err := m.Apply(ctx, public); CodeOf(err) != NotOurs {
+		t.Fatalf("%v", err)
+	}
+	list, _ := m.List()
+	if res := list[0].Resource(state.DNSRecord); res == nil || !res.Done || res.Target != "203.0.113.7" {
+		t.Fatalf("lost track of %s's old record: %+v", e.ID, list[0].Resources)
+	}
+}

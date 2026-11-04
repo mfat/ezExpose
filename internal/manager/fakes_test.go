@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mfat/ezExpose/caddy"
+	"github.com/mfat/ezExpose/cloudflare"
 	"github.com/mfat/ezExpose/internal/state"
 	"github.com/mfat/ezExpose/tailscale"
 )
@@ -70,9 +71,10 @@ func (f *fakeTailnet) Close(_ context.Context, _ string, port int, target string
 type dnsRecord struct{ ip, owner string }
 
 type fakeDNS struct {
-	c       *crasher
-	records map[string]dnsRecord
-	owner   string
+	c            *crasher
+	loseResponse bool // make the change, then fail as if the reply never came
+	records      map[string]dnsRecord
+	owner        string
 }
 
 func (f *fakeDNS) Zone(context.Context, string) (string, error) { return "zone1", nil }
@@ -84,11 +86,14 @@ func (f *fakeDNS) Point(_ context.Context, _, host, ip string) (bool, error) {
 			return true, nil
 		}
 		f.c.step(func() { f.records[host] = dnsRecord{ip, f.owner} })
+		if f.loseResponse {
+			return false, errors.New("read: connection reset by peer")
+		}
 		return true, nil
 	case r.ip == ip:
 		return false, nil
 	}
-	return false, errors.New(host + " already has a DNS record that ezExpose didn't create, so it was left alone")
+	return false, fmt.Errorf("%s already has a DNS record that ezExpose didn't create, %w", host, cloudflare.ErrNotOurs)
 }
 func (f *fakeDNS) Pointing(_ context.Context, _, host string) (string, error) {
 	if r := f.records[host]; r.owner == f.owner {
