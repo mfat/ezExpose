@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"runtime"
 	"strings"
@@ -50,10 +51,14 @@ func Doctor(dir string, sys system.Systemd, ts tailscale.CLI) func(ctx context.C
 		} else {
 			add("Tailscale", "private", true, host)
 		}
-		if problem := netcheck.Port443(netcheck.Listen443); problem != "" {
-			add("Port 443", "public", false, problem)
-		} else {
+		switch problem := netcheck.Port443(netcheck.Listen443); {
+		case problem == "":
 			add("Port 443", "public", true, "free")
+		case listenOn(netcheck.LocalIP()):
+			// Usually Tailscale, holding 443 on its own address only.
+			add("Port 443", "public", true, "free on "+netcheck.LocalIP()+", which is the address Caddy will use")
+		default:
+			add("Port 443", "public", false, problem)
 		}
 		info, err := os.Stat(system.TokenFile(dir))
 		switch {
@@ -112,4 +117,11 @@ func (a *App) doctor(ctx context.Context, args []string) error {
 		fmt.Fprintf(a.Out, "  %-8s %s\n", access, state)
 	}
 	return err
+}
+
+func listenOn(ip string) bool {
+	if ip == "" {
+		return false
+	}
+	return system.Net{}.Listen(net.JoinHostPort(ip, "443")) == nil
 }
