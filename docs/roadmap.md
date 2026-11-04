@@ -20,25 +20,43 @@ expose, overwrite or delete something ezExpose doesn't own.
 - A token file other users can read is refused.
 - CI runs the race detector.
 
-## 2. State and recovery
+## 2. State and recovery (done)
 
 A state file that records what ezExpose owns: each exposure, its Tailscale route, DNS
 record ID, certificate and Caddy site. Every change follows plan, apply, verify, then
 save. If it's interrupted, running it again finishes it or undoes it. When it's unclear
 whether something is ours, the answer is to refuse.
 
-## 3. A headless CLI, private access first
+Tests crash at every change, before and after it takes effect, for every kind of access.
+
+## 3. A headless CLI, private access first (done)
 
 `doctor`, `plan`, `apply`, `status`, `remove` and `reconcile`, with versioned JSON output
 and clear errors. The first route is Tailscale. It's done when the whole lifecycle passes
 twice on a clean Linux host, a second run changes nothing, someone else's route survives,
 and a killed run recovers.
 
-## 4. Public access and renewal
+Proven on a real server on 2026-11-04: opened from another device with a trusted
+certificate, a second apply changed nothing, another app's route on 443 survived, and
+apply and remove killed at six points each always recovered. Tailscale's settings ended
+byte-for-byte as they began. The server wasn't clean: it already ran ezVaultwarden, which
+made a good test of leaving other routes alone.
+
+## 4. Public access and renewal (mostly done)
 
 Caddy on port 443, Cloudflare DNS and certificates, with renewal that runs on the server
 on its own schedule. It's done when a public exposure works end to end, renews after a
 restart, and a failure neither breaks anything else nor reports success.
+
+Proven on the same server: a real certificate over port 443 alone, as root and as a normal
+user, beside Tailscale holding 443 on its own address. systemd restarted a killed Caddy, and
+removal stopped it and deleted its units.
+
+Still to prove, each needing a Cloudflare token on a test machine:
+
+- LAN access end to end, including another device opening it by name.
+- Public access with `--cloudflare` creating the DNS record.
+- A forced renewal (`ezexpose renew --force`) reloading Caddy with the new certificate.
 
 ## 5. Then the user experience and UI
 
