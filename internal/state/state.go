@@ -62,7 +62,7 @@ type Resource struct {
 
 // An Exposure is one local app made reachable one way.
 type Exposure struct {
-	ID      string `json:"id"`
+	ID      string `json:"id,omitempty"`
 	Name    string `json:"name,omitempty"`
 	Backend string `json:"backend"` // such as 127.0.0.1:8080
 	Access  Access `json:"access"`
@@ -70,9 +70,9 @@ type Exposure struct {
 	Port    int    `json:"port"`
 	// Cloudflare is true when ezExpose keeps the DNS record, not the person.
 	Cloudflare bool       `json:"cloudflare,omitempty"`
-	Status     Status     `json:"status"`
+	Status     Status     `json:"status,omitempty"`
 	Resources  []Resource `json:"resources"`
-	Created    time.Time  `json:"created"`
+	Created    time.Time  `json:"created,omitzero"`
 	Checked    time.Time  `json:"checked,omitzero"`
 	Error      string     `json:"error,omitempty"`
 }
