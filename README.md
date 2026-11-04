@@ -32,6 +32,7 @@ login, so ezExpose asks you to confirm the app has its own.
 
 | Command | What it does |
 |---|---|
+| `audit` | See what's already here: what ezExpose set up, every Tailscale route, what's listening and which program or container it is. Changes nothing |
 | `doctor` | Check this machine is ready for each kind of access |
 | `plan` | Show what `apply` would do, changing nothing |
 | `apply` | Expose an app, or check and repair one already exposed |
@@ -56,6 +57,8 @@ done, 1 for failed and 2 for used wrongly.
   made. After a crash, `reconcile` or running the same command again finishes or undoes it.
 - **"Removed" means checked.** An exposure leaves the record only once every part is
   confirmed gone, Caddy included.
+- **Looking is only looking.** `audit` runs nothing but read commands, and seeing a route,
+  record or port never makes it ezExpose's: only its own record does.
 - **One name, one app.** A public or LAN name already in use is refused, so removing one
   app can never take another's DNS record or certificate.
 - **It keeps running without you.** Caddy and renewal are systemd services: user services,

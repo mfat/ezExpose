@@ -89,6 +89,16 @@ A second code review on 2026-11-04 found ten problems. All are fixed, each with 
 - JSON runs could end with two results, usage errors weren't JSON, reconcile hid
   problems, and --json could still stop to ask a question.
 
+Then the first part of a discovery proposal, kept small on purpose: `ezexpose audit`
+lists what ezExpose set up, every Tailscale route with Funnel marked public, what's
+listening and which program or Docker container it is. It warns when an app ezExpose
+fronts can also be opened directly without HTTPS, and names the program holding port 443.
+On the real server, a fingerprint of Tailscale's settings, the service files and the
+listening ports was identical before and after every audit.
+
+Left for later, until someone needs them: reading Nginx, Caddy and Traefik configs,
+taking over existing certificates, migration, and DNS or TLS probes during an audit.
+
 Still to do:
 
 - A reboot test and a second Linux distribution, on a spare machine.
