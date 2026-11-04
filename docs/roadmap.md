@@ -75,6 +75,20 @@ Done on 2026-11-04:
   carrier-grade NAT is refused up front, and a certificate that never arrives explains
   port forwarding.
 
+A second code review on 2026-11-04 found ten problems. All are fixed, each with a test:
+
+- Two apps could share a name, and removing one took the other's DNS record and
+  certificate. Each public or LAN name now belongs to one app.
+- Removal ignored a failed service stop. Units are now kept until confirmed stopped.
+- A crash during the record's backup step blocked every later save.
+- Moving between IPv4 and IPv6 deleted the old DNS record before the new one existed.
+- A lost reply from Cloudflare left a record ezExpose had made but no longer tracked.
+- A site whose certificate never came stayed served by Caddy. It's now taken back out.
+- The Cloudflare client read a token file other users could read, or a link.
+- An approved plan was checked and applied under separate locks.
+- JSON runs could end with two results, usage errors weren't JSON, reconcile hid
+  problems, and --json could still stop to ask a question.
+
 Still to do:
 
 - A reboot test and a second Linux distribution, on a spare machine.

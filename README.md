@@ -44,7 +44,9 @@ login, so ezExpose asks you to confirm the app has its own.
 
 Add `--json` to any command for one JSON object on stdout, with `schema`, `ok` and, on
 failure, an `error` with a `code` such as `not_ours`, `backend_down` or `port`. Progress goes
-to stderr. Exit codes are 0 for done, 1 for failed and 2 for used wrongly.
+to stderr. Every run ends with exactly one `"event":"result"` line, and with `--json`
+nothing ever waits for an answer: pass `--yes`, or nothing changes. Exit codes are 0 for
+done, 1 for failed and 2 for used wrongly.
 
 ## What it promises
 
@@ -53,7 +55,9 @@ to stderr. Exit codes are 0 for done, 1 for failed and 2 for used wrongly.
 - **An interruption is always recoverable.** Each change is saved as pending before it's
   made. After a crash, `reconcile` or running the same command again finishes or undoes it.
 - **"Removed" means checked.** An exposure leaves the record only once every part is
-  confirmed gone.
+  confirmed gone, Caddy included.
+- **One name, one app.** A public or LAN name already in use is refused, so removing one
+  app can never take another's DNS record or certificate.
 - **It keeps running without you.** Caddy and renewal are systemd services: user services,
   or system ones when run as root.
 
