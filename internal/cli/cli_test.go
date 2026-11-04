@@ -256,3 +256,12 @@ func TestReconcileSaysWhenSomethingNeedsAttention(t *testing.T) {
 		t.Fatalf("%s", out)
 	}
 }
+
+func TestJSONNeverAsksEvenInATerminal(t *testing.T) {
+	a, out, errs := app(t, "y\n")
+	a.Terminal = true
+	a.Run(context.Background(), []string{"remove", "--json", "exp_1"})
+	if envelope(t, out.Bytes())["error"].(map[string]any)["code"] != string(manager.NeedsConfirmation) || errs.Len() != 0 {
+		t.Fatalf("stdout %s, stderr %q", out, errs)
+	}
+}

@@ -179,8 +179,10 @@ func (a *App) emit(payload map[string]any, ok bool) {
 	_ = json.NewEncoder(a.Out).Encode(payload)
 }
 
+// confirm asks a person. Scripts and apps (--json, or no terminal) are never
+// asked: they pass --yes, or nothing happens.
 func (a *App) confirm(question string, yes bool) (bool, error) {
-	if !a.Terminal {
+	if !a.Terminal || a.json {
 		return false, nil
 	}
 	hint := "[y/N]"
@@ -316,7 +318,7 @@ func (a *App) apply(ctx context.Context, args []string) error {
 			return err
 		}
 		if !ok {
-			if !a.Terminal {
+			if !a.Terminal || a.json {
 				return &manager.Error{Code: manager.NeedsConfirmation, Err: errors.New("nothing was changed. Add --yes to go ahead without asking")}
 			}
 			fmt.Fprintln(a.Err, "Nothing was changed.")
@@ -423,7 +425,7 @@ func (a *App) remove(ctx context.Context, args []string) error {
 			return err
 		}
 		if !ok {
-			if !a.Terminal {
+			if !a.Terminal || a.json {
 				return &manager.Error{Code: manager.NeedsConfirmation, Err: errors.New("nothing was changed. Add --yes to go ahead without asking")}
 			}
 			fmt.Fprintln(a.Err, "Nothing was changed.")
